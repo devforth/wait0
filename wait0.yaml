@@ -1,0 +1,25 @@
+storage:
+  # cache is received as RAM->disk->origin, cached first in RAM
+  ram:
+    max: '100m'
+  disk:
+    max: '1g'
+
+server:
+  port: 8082
+  origin: 'http://localhost:8080'
+
+rules:
+  - match: PathPrefix(/api) | PathPrefix(/admin)
+    priority: 1
+    bypass: true
+  - match: PathPrefix(/)
+    priority: 2
+    bypassWhenCookies:
+      - sessionid
+    # serves instantly, but if cache is stale, 
+    # it sends request to origin and updates cache
+    expiration: '1m'
+
+    # automatic scheduller which checks all known URLs in origin 
+    wormUp: '10m' 
