@@ -30,7 +30,7 @@ Create Dockerfile:
 ```yaml
 FROM wait0:latest
 ADD wait0.yaml /wait0.yaml
-EXPOSE 8080
+EXPOSE 8082
 ```
 
 In Compose file:
@@ -40,7 +40,7 @@ services:
   wait0:
     build: .
     ports:
-      - "8080:8080"
+      - "8082:8082"
 ```
 
 Config `wait0.yaml`:
@@ -78,3 +78,17 @@ rules:
 How to run:
 
 ```bash
+go test ./...
+go run ./cmd/wait0 -config ./wait0.yaml
+```
+
+Debug stack (origin + wait0):
+
+```bash
+./debug-compose
+curl -i http://localhost:8082/
+curl -i http://localhost:8082/
+
+# cleanup
+docker compose -f debug-compose.yml down -v
+```

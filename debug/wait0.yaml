@@ -1,0 +1,20 @@
+storage:
+  ram:
+    max: '100m'
+  disk:
+    max: '1g'
+
+server:
+  port: 8082
+  origin: 'http://host.docker.internal:8080'
+
+rules:
+  - match: PathPrefix(/api) | PathPrefix(/admin)
+    priority: 1
+    bypass: true
+  - match: PathPrefix(/)
+    priority: 2
+    bypassWhenCookies:
+      - sessionid
+    expiration: '10s'
+    wormUp: '10m'

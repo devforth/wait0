@@ -19,7 +19,7 @@ rules:
       - sessionid
     # serves instantly, but if cache is stale, 
     # it sends request to origin and updates cache
-    expiration: '1m'
+    expiration: '10s'
 
     # automatic scheduller which checks all known URLs in origin 
     wormUp: '10m' 
