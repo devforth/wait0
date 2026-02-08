@@ -98,6 +98,7 @@ func NewService(cfg Config) (*Service, error) {
 	}
 
 	s.startWarmupGroups()
+	s.startURLsDiscover()
 
 	return s, nil
 }
@@ -162,20 +163,24 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().Unix()
 	if ent, ok := s.ram.Get(key, now); ok {
-		s.writeEntryWithStats(w, ent, "hit")
-		if rule != nil && rule.expDur > 0 && isStale(ent, rule.expDur) {
-			s.revalidateAsync(key, r, rule)
+		if !ent.Inactive {
+			s.writeEntryWithStats(w, ent, "hit")
+			if rule != nil && rule.expDur > 0 && isStale(ent, rule.expDur) {
+				s.revalidateAsync(key, r, rule)
+			}
+			return
 		}
-		return
 	}
 
 	if ent, ok := s.disk.Get(key); ok {
-		s.ram.Put(key, ent, s.disk, s.overflowLog)
-		s.writeEntryWithStats(w, ent, "hit")
-		if rule != nil && rule.expDur > 0 && isStale(ent, rule.expDur) {
-			s.revalidateAsync(key, r, rule)
+		if !ent.Inactive {
+			s.ram.Put(key, ent, s.disk, s.overflowLog)
+			s.writeEntryWithStats(w, ent, "hit")
+			if rule != nil && rule.expDur > 0 && isStale(ent, rule.expDur) {
+				s.revalidateAsync(key, r, rule)
+			}
+			return
 		}
-		return
 	}
 
 	// miss
@@ -245,6 +250,7 @@ func writeEntry(w http.ResponseWriter, ent CacheEntry, wait0 string) {
 		}
 	}
 	setWait0Headers(w.Header(), wait0)
+	setWait0DiscoveredHeaders(w.Header(), ent)
 	if wait0 == "hit" {
 		setWait0RevalidatedHeaders(w.Header(), ent)
 	}
@@ -282,6 +288,16 @@ func setWait0RevalidatedHeaders(h http.Header, ent CacheEntry) {
 		ensureExposedHeader(h, hAt)
 		ensureExposedHeader(h, hBy)
 	}
+}
+
+func setWait0DiscoveredHeaders(h http.Header, ent CacheEntry) {
+	const name = "X-Wait0-Discovered-By"
+	v := strings.TrimSpace(ent.DiscoveredBy)
+	if v == "" {
+		return
+	}
+	h.Set(name, v)
+	ensureExposedHeader(h, name)
 }
 
 func ensureExposedHeader(h http.Header, name string) {
@@ -423,10 +439,12 @@ func (s *Service) fetchFromOrigin(r *http.Request) (CacheEntry, bool, string, er
 
 	now := time.Now().UTC()
 	ent := CacheEntry{
-		Status:   resp.StatusCode,
-		Header:   cloneHeader(resp.Header),
-		Body:     body,
-		StoredAt: now.Unix(),
+		Status:       resp.StatusCode,
+		Header:       cloneHeader(resp.Header),
+		Body:         body,
+		StoredAt:     now.Unix(),
+		Inactive:     false,
+		DiscoveredBy: "user",
 		// Initial fill is considered a user-triggered revalidation.
 		RevalidatedAt: now.UnixNano(),
 		RevalidatedBy: "user",
@@ -499,6 +517,13 @@ func (s *Service) revalidateOnce(ctx context.Context, key, path, query, by strin
 	cur, hasCur := s.ram.Peek(key)
 	if !hasCur {
 		cur, hasCur = s.disk.Peek(key)
+	}
+
+	discoveredBy := "user"
+	if hasCur {
+		if v := strings.TrimSpace(cur.DiscoveredBy); v != "" {
+			discoveredBy = v
+		}
 	}
 
 	uri := path
@@ -575,6 +600,8 @@ func (s *Service) revalidateOnce(ctx context.Context, key, path, query, by strin
 		Body:          body,
 		StoredAt:      now.Unix(),
 		Hash32:        crc32.ChecksumIEEE(body),
+		Inactive:      false,
+		DiscoveredBy:  discoveredBy,
 		RevalidatedAt: now.UnixNano(),
 		RevalidatedBy: by,
 	}
@@ -637,17 +664,6 @@ func (s *Service) warmupGroupLoop(rule *Rule) {
 		unchanged, updated, deleted, ignoredStatus, ignoredCacheControl, errors = 0, 0, 0, 0, 0, 0
 	}
 
-	var lastLog time.Time
-	var pending *warmupSummary
-	var logTimer *time.Timer
-	stopTimer := func() {
-		if logTimer != nil {
-			logTimer.Stop()
-			logTimer = nil
-		}
-	}
-	defer stopTimer()
-
 	makeSummary := func() warmupSummary {
 		took := time.Since(batchStart)
 		if batchStart.IsZero() {
@@ -687,34 +703,15 @@ func (s *Service) warmupGroupLoop(rule *Rule) {
 		}
 
 		// drained
-		if s.cfg.Logging.logRevalidationEveryDur > 0 {
+		if s.cfg.Logging.LogWarmUp {
 			sum := makeSummary()
-			interval := s.cfg.Logging.logRevalidationEveryDur
-			now := time.Now()
-			nextAt := lastLog.Add(interval)
-			if lastLog.IsZero() || !now.Before(nextAt) {
-				log.Printf(
-					"Revalidated for match %q: %d URLs (unchanged=%d updated=%d deleted=%d ignoredStatus=%d ignoredCC=%d errors=%d updated+errors=%d), Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
-					sum.match, sum.urls,
-					sum.unchanged, sum.updated, sum.deleted, sum.ignoredStatus, sum.ignoredCacheControl, sum.errors, sum.updated+sum.errors,
-					sum.took.Truncate(time.Millisecond), sum.rps,
-					sum.minRT.Truncate(time.Millisecond), sum.avgRT.Truncate(time.Millisecond), sum.maxRT.Truncate(time.Millisecond),
-				)
-				lastLog = now
-				pending = nil
-				stopTimer()
-			} else {
-				pending = &sum
-				wait := time.Until(nextAt)
-				if wait < 0 {
-					wait = 0
-				}
-				if logTimer == nil {
-					logTimer = time.NewTimer(wait)
-				} else {
-					logTimer.Reset(wait)
-				}
-			}
+			log.Printf(
+				"Revalidated for match %q: %d URLs (unchanged=%d updated=%d deleted=%d ignoredStatus=%d ignoredCC=%d errors=%d updated+errors=%d), Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
+				sum.match, sum.urls,
+				sum.unchanged, sum.updated, sum.deleted, sum.ignoredStatus, sum.ignoredCacheControl, sum.errors, sum.updated+sum.errors,
+				sum.took.Truncate(time.Millisecond), sum.rps,
+				sum.minRT.Truncate(time.Millisecond), sum.avgRT.Truncate(time.Millisecond), sum.maxRT.Truncate(time.Millisecond),
+			)
 		}
 		resetBatch()
 	}
@@ -762,15 +759,10 @@ func (s *Service) warmupGroupLoop(rule *Rule) {
 	stopCh := s.stopCh // local so we can nil it after first signal (avoid select starvation)
 
 	for {
-		var timerCh <-chan time.Time
-		if logTimer != nil && !stopping {
-			timerCh = logTimer.C
-		}
-
 		// If shutting down and nothing is in-flight, exit (safe: no worker can still be sending).
 		if stopping && inflight == 0 {
 			// Optional: flush a final summary immediately (no delayed timer) if a batch was active.
-			if !batchStart.IsZero() && s.cfg.Logging.logRevalidationEveryDur > 0 {
+			if !batchStart.IsZero() && s.cfg.Logging.LogWarmUp {
 				sum := makeSummary()
 				log.Printf(
 					"Revalidated for match %q: %d URLs (unchanged=%d updated=%d deleted=%d ignoredStatus=%d ignoredCC=%d errors=%d updated+errors=%d), Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
@@ -795,10 +787,6 @@ func (s *Service) warmupGroupLoop(rule *Rule) {
 				delete(queued, k)
 			}
 			queue = queue[:0]
-
-			// Avoid waiting on delayed log timers during shutdown.
-			pending = nil
-			stopTimer()
 
 		case <-t.C:
 			if stopping {
@@ -848,19 +836,6 @@ func (s *Service) warmupGroupLoop(rule *Rule) {
 				maybeFinish()
 			}
 
-		case <-timerCh:
-			if pending != nil {
-				log.Printf(
-					"Revalidated for match %q: %d URLs (unchanged=%d updated=%d deleted=%d ignoredStatus=%d ignoredCC=%d errors=%d updated+errors=%d), Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
-					pending.match, pending.urls,
-					pending.unchanged, pending.updated, pending.deleted, pending.ignoredStatus, pending.ignoredCacheControl, pending.errors, pending.updated+pending.errors,
-					pending.took.Truncate(time.Millisecond), pending.rps,
-					pending.minRT.Truncate(time.Millisecond), pending.avgRT.Truncate(time.Millisecond), pending.maxRT.Truncate(time.Millisecond),
-				)
-				lastLog = time.Now()
-				pending = nil
-			}
-			stopTimer()
 		}
 	}
 }
@@ -1066,6 +1041,9 @@ func (d *diskCache) Get(key string) (CacheEntry, bool) {
 	if !ok {
 		return CacheEntry{}, false
 	}
+	if ent.Inactive {
+		return CacheEntry{}, false
+	}
 	now := time.Now().Unix()
 	d.mu.Lock()
 	meta, exists := d.index[key]
@@ -1257,6 +1235,9 @@ func (c *ramCache) Get(key string, nowUnix int64) (CacheEntry, bool) {
 	defer c.mu.Unlock()
 	it, ok := c.items[key]
 	if !ok {
+		return CacheEntry{}, false
+	}
+	if it.ent.Inactive {
 		return CacheEntry{}, false
 	}
 	it.lastAccess = nowUnix

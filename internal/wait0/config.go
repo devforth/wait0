@@ -25,11 +25,28 @@ type Config struct {
 		Origin string `yaml:"origin"`
 	} `yaml:"server"`
 
+	URLsDiscover struct {
+		// NOTE: historically this was misspelled as "initalDelay" in configs.
+		InitialDelay    string   `yaml:"initialDelay"`
+		InitalDelay     string   `yaml:"initalDelay"`
+		RediscoverEvery string   `yaml:"rediscoverEvery"`
+		Sitemaps        []string `yaml:"sitemaps"`
+
+		// compiled
+		initialDelayDur    time.Duration `yaml:"-"`
+		rediscoverEveryDur time.Duration `yaml:"-"`
+	} `yaml:"urlsDiscover"`
+
 	Logging struct {
-		LogStatsEvery          string        `yaml:"log_stats_every"`
-		logStatsEveryDur       time.Duration `yaml:"-"`
-		LogRevalidationEvery   string        `yaml:"log_revalidation_every"`
-		logRevalidationEveryDur time.Duration `yaml:"-"`
+		LogStatsEvery    string        `yaml:"log_stats_every"`
+		logStatsEveryDur time.Duration `yaml:"-"`
+		// LogWarmUp prints a summary after each warmup batch drains.
+		LogWarmUp bool `yaml:"log_warmup"`
+
+		// Deprecated: use log_warmup instead.
+		// If provided, warmup logging is enabled (the duration is validated but ignored).
+		LogRevalidationEvery string `yaml:"log_revalidation_every"`
+		LogURLAutodiscover   bool   `yaml:"log_url_autodiscover"`
 	} `yaml:"logging"`
 
 	Rules []Rule `yaml:"rules"`
@@ -44,16 +61,16 @@ type WarmUpConfig struct {
 }
 
 type Rule struct {
-	Match             string   `yaml:"match"`
-	Priority          int      `yaml:"priority"`
-	Bypass            bool     `yaml:"bypass"`
-	BypassWhenCookies []string `yaml:"bypassWhenCookies"`
-	Expiration        string   `yaml:"expiration"`
+	Match             string        `yaml:"match"`
+	Priority          int           `yaml:"priority"`
+	Bypass            bool          `yaml:"bypass"`
+	BypassWhenCookies []string      `yaml:"bypassWhenCookies"`
+	Expiration        string        `yaml:"expiration"`
 	WarmUp            *WarmUpConfig `yaml:"warmUp"`
 
 	// compiled
-	matchers []pathPrefixMatcher
-	expDur   time.Duration
+	matchers  []pathPrefixMatcher
+	expDur    time.Duration
 	warmEvery time.Duration
 	warmMax   int
 }
@@ -79,6 +96,35 @@ func LoadConfig(path string) (Config, error) {
 	}
 	cfg.Server.Origin = strings.TrimRight(cfg.Server.Origin, "/")
 
+	// urlsDiscover (optional)
+	if len(cfg.URLsDiscover.Sitemaps) > 0 {
+		initDelay := strings.TrimSpace(cfg.URLsDiscover.InitialDelay)
+		if initDelay == "" {
+			initDelay = strings.TrimSpace(cfg.URLsDiscover.InitalDelay)
+		}
+		if initDelay != "" {
+			d, err := time.ParseDuration(initDelay)
+			if err != nil {
+				return Config{}, fmt.Errorf("urlsDiscover.initialDelay: %w", err)
+			}
+			if d < 0 {
+				return Config{}, fmt.Errorf("urlsDiscover.initialDelay: must be >= 0")
+			}
+			cfg.URLsDiscover.initialDelayDur = d
+		}
+
+		if strings.TrimSpace(cfg.URLsDiscover.RediscoverEvery) != "" {
+			d, err := time.ParseDuration(cfg.URLsDiscover.RediscoverEvery)
+			if err != nil {
+				return Config{}, fmt.Errorf("urlsDiscover.rediscoverEvery: %w", err)
+			}
+			if d <= 0 {
+				return Config{}, fmt.Errorf("urlsDiscover.rediscoverEvery: must be > 0")
+			}
+			cfg.URLsDiscover.rediscoverEveryDur = d
+		}
+	}
+
 	if cfg.Logging.LogStatsEvery != "" {
 		d, err := time.ParseDuration(cfg.Logging.LogStatsEvery)
 		if err != nil {
@@ -90,15 +136,13 @@ func LoadConfig(path string) (Config, error) {
 		cfg.Logging.logStatsEveryDur = d
 	}
 
-	if cfg.Logging.LogRevalidationEvery != "" {
-		d, err := time.ParseDuration(cfg.Logging.LogRevalidationEvery)
+	if strings.TrimSpace(cfg.Logging.LogRevalidationEvery) != "" {
+		// Backward compatible alias for the previous warmup logging setting.
+		_, err := time.ParseDuration(cfg.Logging.LogRevalidationEvery)
 		if err != nil {
 			return Config{}, fmt.Errorf("logging.log_revalidation_every: %w", err)
 		}
-		if d <= 0 {
-			return Config{}, fmt.Errorf("logging.log_revalidation_every: must be > 0")
-		}
-		cfg.Logging.logRevalidationEveryDur = d
+		cfg.Logging.LogWarmUp = true
 	}
 
 	for i := range cfg.Rules {
