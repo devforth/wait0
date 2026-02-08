@@ -10,8 +10,10 @@ import (
 	"log"
 	mrand "math/rand"
 	"net/http"
+	"os"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,10 +35,26 @@ type Service struct {
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 
-	overflowLog *rateLimitedLogger
-	hashLog     *rateLimitedLogger
+	overflowLog  *rateLimitedLogger
+	hashLog      *rateLimitedLogger
+	unchangedLog *rateLimitedLogger
+	errorLog     *rateLimitedLogger
+
+	sendRevalidateMarkers bool
 
 	stats *statsCollector
+}
+
+func envBool(name string, def bool) bool {
+	v, ok := os.LookupEnv(name)
+	if !ok || strings.TrimSpace(v) == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(strings.TrimSpace(v))
+	if err != nil {
+		return def
+	}
+	return b
 }
 
 func NewService(cfg Config) (*Service, error) {
@@ -54,14 +72,17 @@ func NewService(cfg Config) (*Service, error) {
 	}
 
 	s := &Service{
-		cfg:         cfg,
-		httpClient:  &http.Client{Timeout: 30 * time.Second},
-		ram:         newRAMCache(ramMax),
-		disk:        disk,
-		bgSem:       make(chan struct{}, 32),
-		stopCh:      make(chan struct{}),
-		overflowLog: newRateLimitedLogger(1 * time.Minute),
-		hashLog:     newRateLimitedLogger(1 * time.Minute),
+		cfg:                   cfg,
+		httpClient:            &http.Client{Timeout: 30 * time.Second},
+		ram:                   newRAMCache(ramMax),
+		disk:                  disk,
+		bgSem:                 make(chan struct{}, 32),
+		stopCh:                make(chan struct{}),
+		overflowLog:           newRateLimitedLogger(1 * time.Minute),
+		hashLog:               newRateLimitedLogger(1 * time.Minute),
+		unchangedLog:          newRateLimitedLogger(10 * time.Second),
+		errorLog:              newRateLimitedLogger(10 * time.Second),
+		sendRevalidateMarkers: envBool("WAIT0_SEND_REVALIDATE_MARKERS", true),
 	}
 
 	if cfg.Logging.logStatsEveryDur > 0 {
@@ -107,6 +128,12 @@ type revalResult struct {
 	ok      bool
 	changed bool
 	dur     time.Duration
+
+	uri  string
+	path string
+
+	kind string // "unchanged" | "updated" | "deleted" | "ignored-status" | "ignored-cache-control" | "error"
+	err  string
 }
 
 func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
@@ -479,33 +506,48 @@ func (s *Service) revalidateOnce(ctx context.Context, key, path, query, by strin
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, originURL, nil)
 	if err != nil {
-		return revalResult{ok: false, changed: false, dur: time.Since(start)}
+		return revalResult{ok: false, changed: false, dur: time.Since(start), uri: uri, path: path, kind: "error", err: err.Error()}
 	}
-	req.Header.Set("X-Wait0-Revalidate-At", time.Now().UTC().Format(time.RFC3339Nano))
-	entropy := randomString(8)
-	req.Header.Set("X-Wait0-Revalidate-Entropy", entropy)
 
+	if s.sendRevalidateMarkers {
+		req.Header.Set("X-Wait0-Revalidate-At", time.Now().UTC().Format(time.RFC3339Nano))
+		req.Header.Set("X-Wait0-Revalidate-Entropy", randomString(8))
+	}
 	req.Header.Set("Accept-Encoding", "identity")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return revalResult{ok: false, changed: false, dur: time.Since(start)}
+		return revalResult{ok: false, changed: false, dur: time.Since(start), uri: uri, path: path, kind: "error", err: err.Error()}
 	}
 	defer resp.Body.Close()
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return revalResult{ok: false, changed: false, dur: time.Since(start)}
+		return revalResult{ok: false, changed: false, dur: time.Since(start), uri: uri, path: path, kind: "error", err: err.Error()}
 	}
-	res := revalResult{ok: true, changed: false, dur: time.Since(start)}
+
+	res := revalResult{
+		ok:      true,
+		changed: false,
+		dur:     time.Since(start),
+		uri:     uri,
+		path:    path,
+		kind:    "",
+		err:     "",
+	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if hasCur {
 			s.ram.Delete(key)
 			s.disk.Delete(key)
 			res.changed = true
+			res.kind = "deleted"
+		} else {
+			res.kind = "ignored-status"
 		}
 		return res
 	}
+
 	cc := strings.ToLower(resp.Header.Get("Cache-Control"))
 	cacheable := true
 	if strings.Contains(cc, "no-store") || strings.Contains(cc, "no-cache") {
@@ -516,6 +558,9 @@ func (s *Service) revalidateOnce(ctx context.Context, key, path, query, by strin
 			s.ram.Delete(key)
 			s.disk.Delete(key)
 			res.changed = true
+			res.kind = "deleted"
+		} else {
+			res.kind = "ignored-cache-control"
 		}
 		return res
 	}
@@ -533,6 +578,10 @@ func (s *Service) revalidateOnce(ctx context.Context, key, path, query, by strin
 	newEnt.Header.Del("Content-Length")
 
 	if hasCur && cur.Hash32 == newEnt.Hash32 {
+		res.kind = "unchanged"
+		if s.unchangedLog != nil {
+			s.unchangedLog.Printf("Revalidate unchanged: path=%q uri=%q", path, uri)
+		}
 		// Content is identical, but we still refresh StoredAt and revalidation
 		// metadata so the entry doesn't remain stale forever.
 		s.ram.Put(key, newEnt, s.disk, s.overflowLog)
@@ -543,18 +592,25 @@ func (s *Service) revalidateOnce(ctx context.Context, key, path, query, by strin
 	s.ram.Put(key, newEnt, s.disk, s.overflowLog)
 	s.disk.PutAsync(key, newEnt)
 	res.changed = true
+	res.kind = "updated"
 	return res
 }
 
 type warmupSummary struct {
-	match   string
-	urls    int
-	changed int
-	took    time.Duration
-	rps     float64
-	minRT   time.Duration
-	avgRT   time.Duration
-	maxRT   time.Duration
+	match string
+	urls  int
+	took  time.Duration
+	rps   float64
+	minRT time.Duration
+	avgRT time.Duration
+	maxRT time.Duration
+
+	unchanged           int
+	updated             int
+	deleted             int
+	ignoredStatus       int
+	ignoredCacheControl int
+	errors              int
 }
 
 func (s *Service) warmupGroupLoop(rule *Rule) {
@@ -566,13 +622,16 @@ func (s *Service) warmupGroupLoop(rule *Rule) {
 
 	var inflight int
 	var batchStart time.Time
-	var urls, changed int
+	var urls int
 	var minRT, maxRT, sumRT time.Duration
+
+	var unchanged, updated, deleted, ignoredStatus, ignoredCacheControl, errors int
 
 	resetBatch := func() {
 		batchStart = time.Time{}
-		urls, changed = 0, 0
+		urls = 0
 		minRT, maxRT, sumRT = 0, 0, 0
+		unchanged, updated, deleted, ignoredStatus, ignoredCacheControl, errors = 0, 0, 0, 0, 0, 0
 	}
 
 	var lastLog time.Time
@@ -600,14 +659,19 @@ func (s *Service) warmupGroupLoop(rule *Rule) {
 			avg = sumRT / time.Duration(urls)
 		}
 		return warmupSummary{
-			match:   rule.Match,
-			urls:    urls,
-			changed: changed,
-			took:    took,
-			rps:     rps,
-			minRT:   minRT,
-			avgRT:   avg,
-			maxRT:   maxRT,
+			match:               rule.Match,
+			urls:                urls,
+			took:                took,
+			rps:                 rps,
+			minRT:               minRT,
+			avgRT:               avg,
+			maxRT:               maxRT,
+			unchanged:           unchanged,
+			updated:             updated,
+			deleted:             deleted,
+			ignoredStatus:       ignoredStatus,
+			ignoredCacheControl: ignoredCacheControl,
+			errors:              errors,
 		}
 	}
 
@@ -627,8 +691,10 @@ func (s *Service) warmupGroupLoop(rule *Rule) {
 			nextAt := lastLog.Add(interval)
 			if lastLog.IsZero() || !now.Before(nextAt) {
 				log.Printf(
-					"Revalidated for match %q: %d URLs, %d changed, Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
-					sum.match, sum.urls, sum.changed, sum.took.Truncate(time.Millisecond), sum.rps,
+					"Revalidated for match %q: %d URLs (unchanged=%d updated=%d deleted=%d ignoredStatus=%d ignoredCC=%d errors=%d updated+errors=%d), Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
+					sum.match, sum.urls,
+					sum.unchanged, sum.updated, sum.deleted, sum.ignoredStatus, sum.ignoredCacheControl, sum.errors, sum.updated+sum.errors,
+					sum.took.Truncate(time.Millisecond), sum.rps,
 					sum.minRT.Truncate(time.Millisecond), sum.avgRT.Truncate(time.Millisecond), sum.maxRT.Truncate(time.Millisecond),
 				)
 				lastLog = now
@@ -704,8 +770,10 @@ func (s *Service) warmupGroupLoop(rule *Rule) {
 			if !batchStart.IsZero() && s.cfg.Logging.logRevalidationEveryDur > 0 {
 				sum := makeSummary()
 				log.Printf(
-					"Revalidated for match %q: %d URLs, %d changed, Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
-					sum.match, sum.urls, sum.changed, sum.took.Truncate(time.Millisecond), sum.rps,
+					"Revalidated for match %q: %d URLs (unchanged=%d updated=%d deleted=%d ignoredStatus=%d ignoredCC=%d errors=%d updated+errors=%d), Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
+					sum.match, sum.urls,
+					sum.unchanged, sum.updated, sum.deleted, sum.ignoredStatus, sum.ignoredCacheControl, sum.errors, sum.updated+sum.errors,
+					sum.took.Truncate(time.Millisecond), sum.rps,
 					sum.minRT.Truncate(time.Millisecond), sum.avgRT.Truncate(time.Millisecond), sum.maxRT.Truncate(time.Millisecond),
 				)
 			}
@@ -740,15 +808,36 @@ func (s *Service) warmupGroupLoop(rule *Rule) {
 			inflight--
 			if !batchStart.IsZero() {
 				urls++
-				if res.changed {
-					changed++
-				}
 				sumRT += res.dur
 				if minRT == 0 || res.dur < minRT {
 					minRT = res.dur
 				}
 				if res.dur > maxRT {
 					maxRT = res.dur
+				}
+
+				switch res.kind {
+				case "unchanged":
+					unchanged++
+				case "updated":
+					updated++
+				case "deleted":
+					deleted++
+				case "ignored-status":
+					ignoredStatus++
+				case "ignored-cache-control":
+					ignoredCacheControl++
+				case "error":
+					errors++
+					if s.errorLog != nil {
+						s.errorLog.Printf("Revalidate error: path=%q uri=%q err=%q", res.path, res.uri, res.err)
+					}
+				default:
+					// keep buckets stable even if kind is empty/unknown
+					errors++
+					if s.errorLog != nil {
+						s.errorLog.Printf("Revalidate error: path=%q uri=%q err=%q", res.path, res.uri, "unknown-kind")
+					}
 				}
 			}
 			if !stopping {
@@ -759,8 +848,10 @@ func (s *Service) warmupGroupLoop(rule *Rule) {
 		case <-timerCh:
 			if pending != nil {
 				log.Printf(
-					"Revalidated for match %q: %d URLs, %d changed, Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
-					pending.match, pending.urls, pending.changed, pending.took.Truncate(time.Millisecond), pending.rps,
+					"Revalidated for match %q: %d URLs (unchanged=%d updated=%d deleted=%d ignoredStatus=%d ignoredCC=%d errors=%d updated+errors=%d), Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
+					pending.match, pending.urls,
+					pending.unchanged, pending.updated, pending.deleted, pending.ignoredStatus, pending.ignoredCacheControl, pending.errors, pending.updated+pending.errors,
+					pending.took.Truncate(time.Millisecond), pending.rps,
 					pending.minRT.Truncate(time.Millisecond), pending.avgRT.Truncate(time.Millisecond), pending.maxRT.Truncate(time.Millisecond),
 				)
 				lastLog = time.Now()
