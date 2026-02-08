@@ -59,6 +59,7 @@ server:
   
 logging:
   log_stats_every: '10s'
+  log_revalidation_every: '20s'
   # if not set/empty, stats are not collected or logged
   # log stats when enabled logs
   # Cached: Paths: 12, RAM usage: 1.2mb, Disk usage: 0b, Resp Min/avg/max 12b/120b/1024kb
@@ -76,7 +77,9 @@ rules:
     expiration: '1m'
 
     # automatic scheduller which checks all known URLs in origin 
-    warmUp: '10m' 
+    warmUp:
+      runEvery: '10m'
+      maxRequestsAtATime: 5
 ```
 
 # For developers

@@ -10,7 +10,7 @@ logging:
   log_stats_every: '10s'
 
   # Revalidated for match "PathPrefix(xx) | PathPrefix(yy)": X URLs, Y changed, Took: 20s, RPS: 10, resp time min/avg/max - 10ms/20ms/1s
-  log_revalidation_every: '20s'
+  log_revalidation_every: '10s'
   
 server:
   port: 8082
@@ -31,4 +31,4 @@ rules:
       # Max number of in-flight warm-up (revalidation) requests at once.
       # Warm-up candidates beyond this limit should be queued and continued
       # across subsequent warmUp ticks until fully drained.
-      maxRequestsAtATime: 5
+      maxRequestsAtATime: 1000

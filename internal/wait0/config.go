@@ -26,11 +26,21 @@ type Config struct {
 	} `yaml:"server"`
 
 	Logging struct {
-		LogStatsEvery    string        `yaml:"log_stats_every"`
-		logStatsEveryDur time.Duration `yaml:"-"`
+		LogStatsEvery          string        `yaml:"log_stats_every"`
+		logStatsEveryDur       time.Duration `yaml:"-"`
+		LogRevalidationEvery   string        `yaml:"log_revalidation_every"`
+		logRevalidationEveryDur time.Duration `yaml:"-"`
 	} `yaml:"logging"`
 
 	Rules []Rule `yaml:"rules"`
+}
+
+type WarmUpConfig struct {
+	RunEvery           string `yaml:"runEvery"`
+	MaxRequestsAtATime int    `yaml:"maxRequestsAtATime"`
+
+	// compiled
+	runEveryDur time.Duration `yaml:"-"`
 }
 
 type Rule struct {
@@ -39,12 +49,13 @@ type Rule struct {
 	Bypass            bool     `yaml:"bypass"`
 	BypassWhenCookies []string `yaml:"bypassWhenCookies"`
 	Expiration        string   `yaml:"expiration"`
-	WarmUp            string   `yaml:"warmUp"`
+	WarmUp            *WarmUpConfig `yaml:"warmUp"`
 
 	// compiled
 	matchers []pathPrefixMatcher
 	expDur   time.Duration
-	warmDur  time.Duration
+	warmEvery time.Duration
+	warmMax   int
 }
 
 type pathPrefixMatcher struct{ Prefix string }
@@ -79,6 +90,17 @@ func LoadConfig(path string) (Config, error) {
 		cfg.Logging.logStatsEveryDur = d
 	}
 
+	if cfg.Logging.LogRevalidationEvery != "" {
+		d, err := time.ParseDuration(cfg.Logging.LogRevalidationEvery)
+		if err != nil {
+			return Config{}, fmt.Errorf("logging.log_revalidation_every: %w", err)
+		}
+		if d <= 0 {
+			return Config{}, fmt.Errorf("logging.log_revalidation_every: must be > 0")
+		}
+		cfg.Logging.logRevalidationEveryDur = d
+	}
+
 	for i := range cfg.Rules {
 		r := &cfg.Rules[i]
 		ms, err := parseMatch(r.Match)
@@ -93,12 +115,23 @@ func LoadConfig(path string) (Config, error) {
 			}
 			r.expDur = d
 		}
-		if r.WarmUp != "" {
-			d, err := time.ParseDuration(r.WarmUp)
-			if err != nil {
-				return Config{}, fmt.Errorf("rules[%d].warmUp: %w", i, err)
+		if r.WarmUp != nil {
+			if strings.TrimSpace(r.WarmUp.RunEvery) == "" {
+				return Config{}, fmt.Errorf("rules[%d].warmUp.runEvery: is required", i)
 			}
-			r.warmDur = d
+			d, err := time.ParseDuration(r.WarmUp.RunEvery)
+			if err != nil {
+				return Config{}, fmt.Errorf("rules[%d].warmUp.runEvery: %w", i, err)
+			}
+			if d <= 0 {
+				return Config{}, fmt.Errorf("rules[%d].warmUp.runEvery: must be > 0", i)
+			}
+			if r.WarmUp.MaxRequestsAtATime <= 0 {
+				return Config{}, fmt.Errorf("rules[%d].warmUp.maxRequestsAtATime: must be > 0", i)
+			}
+			r.WarmUp.runEveryDur = d
+			r.warmEvery = d
+			r.warmMax = r.WarmUp.MaxRequestsAtATime
 		}
 	}
 

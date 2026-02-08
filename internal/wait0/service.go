@@ -69,16 +69,7 @@ func NewService(cfg Config) (*Service, error) {
 		}()
 	}
 
-	warmEvery := minWarmInterval(cfg.Rules)
-	if warmEvery > 0 {
-		log.Printf("warmup tick interval: %s (min warmUp among rules)", warmEvery)
-
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			s.warmupLoop(warmEvery)
-		}()
-	}
+	s.startWarmupGroups()
 
 	return s, nil
 }
@@ -93,17 +84,25 @@ func (s *Service) Handler() http.Handler {
 	return http.HandlerFunc(s.handle)
 }
 
-func minWarmInterval(rules []Rule) time.Duration {
-	var out time.Duration
-	for _, r := range rules {
-		if r.warmDur <= 0 {
+func (s *Service) startWarmupGroups() {
+	for i := range s.cfg.Rules {
+		r := &s.cfg.Rules[i]
+		if r.warmEvery <= 0 || r.warmMax <= 0 {
 			continue
 		}
-		if out == 0 || r.warmDur < out {
-			out = r.warmDur
-		}
+		log.Printf("warmup group start: match=%q, runEvery=%s, maxRequestsAtATime=%d", r.Match, r.warmEvery, r.warmMax)
+		s.wg.Add(1)
+		go func(rule *Rule) {
+			defer s.wg.Done()
+			s.warmupGroupLoop(rule)
+		}(r)
 	}
-	return out
+}
+
+type revalResult struct {
+	ok      bool
+	changed bool
+	dur     time.Duration
 }
 
 func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
@@ -212,6 +211,9 @@ func writeEntry(w http.ResponseWriter, ent CacheEntry, wait0 string) {
 		}
 	}
 	setWait0Headers(w.Header(), wait0)
+	if wait0 == "hit" {
+		setWait0RevalidatedHeaders(w.Header(), ent)
+	}
 	w.WriteHeader(ent.Status)
 	_, _ = w.Write(ent.Body)
 }
@@ -223,6 +225,29 @@ func setWait0Headers(h http.Header, wait0 string) {
 	// If this is used from a browser in a CORS context, custom headers are not
 	// readable by JS unless explicitly exposed.
 	ensureExposedHeader(h, "X-Wait0")
+}
+
+func setWait0RevalidatedHeaders(h http.Header, ent CacheEntry) {
+	const (
+		hAt = "X-Wait0-Revalidated-At"
+		hBy = "X-Wait0-Revalidated-By"
+	)
+
+	by := strings.TrimSpace(ent.RevalidatedBy)
+	if by == "" {
+		by = "user"
+	}
+
+	ts := ent.RevalidatedAt
+	if ts == 0 && ent.StoredAt != 0 {
+		ts = time.Unix(ent.StoredAt, 0).UTC().UnixNano()
+	}
+	if ts != 0 {
+		h.Set(hAt, time.Unix(0, ts).UTC().Format(time.RFC3339Nano))
+		h.Set(hBy, by)
+		ensureExposedHeader(h, hAt)
+		ensureExposedHeader(h, hBy)
+	}
 }
 
 func ensureExposedHeader(h http.Header, name string) {
@@ -326,11 +351,15 @@ func (s *Service) fetchFromOrigin(r *http.Request) (CacheEntry, bool, string, er
 		return CacheEntry{}, false, "", err
 	}
 
+	now := time.Now().UTC()
 	ent := CacheEntry{
 		Status:   resp.StatusCode,
 		Header:   cloneHeader(resp.Header),
 		Body:     body,
-		StoredAt: time.Now().Unix(),
+		StoredAt: now.Unix(),
+		// Initial fill is considered a user-triggered revalidation.
+		RevalidatedAt: now.UnixNano(),
+		RevalidatedBy: "user",
 	}
 	ent.Header.Del("Content-Length")
 	ent.Hash32 = crc32.ChecksumIEEE(body)
@@ -391,11 +420,17 @@ func (s *Service) revalidateAsync(key string, r *http.Request, rule *Rule) {
 		defer func() { <-s.bgSem }()
 		defer cancel()
 
-		s.revalidateOnce(ctx, key, path, query)
+		_ = s.revalidateOnce(ctx, key, path, query, "user")
 	}()
 }
 
-func (s *Service) revalidateOnce(ctx context.Context, key, path, query string) {
+func (s *Service) revalidateOnce(ctx context.Context, key, path, query, by string) revalResult {
+	start := time.Now()
+	cur, hasCur := s.ram.Peek(key)
+	if !hasCur {
+		cur, hasCur = s.disk.Peek(key)
+	}
+
 	uri := path
 	if query != "" {
 		uri = uri + "?" + query
@@ -404,25 +439,29 @@ func (s *Service) revalidateOnce(ctx context.Context, key, path, query string) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, originURL, nil)
 	if err != nil {
-		return
+		return revalResult{ok: false, changed: false, dur: time.Since(start)}
 	}
 	req.Header.Set("X-Dbg-Revalidate-At", time.Now().UTC().Format(time.RFC3339Nano))
 	req.Header.Set("Accept-Encoding", "identity")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return
+		return revalResult{ok: false, changed: false, dur: time.Since(start)}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return
+		return revalResult{ok: false, changed: false, dur: time.Since(start)}
 	}
+	res := revalResult{ok: true, changed: false, dur: time.Since(start)}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		s.ram.Delete(key)
-		s.disk.Delete(key)
-		return
+		if hasCur {
+			s.ram.Delete(key)
+			s.disk.Delete(key)
+			res.changed = true
+		}
+		return res
 	}
 	cc := strings.ToLower(resp.Header.Get("Cache-Control"))
 	cacheable := true
@@ -430,67 +469,271 @@ func (s *Service) revalidateOnce(ctx context.Context, key, path, query string) {
 		cacheable = false
 	}
 	if !cacheable {
-		s.ram.Delete(key)
-		s.disk.Delete(key)
-		return
+		if hasCur {
+			s.ram.Delete(key)
+			s.disk.Delete(key)
+			res.changed = true
+		}
+		return res
 	}
 
+	now := time.Now().UTC()
 	newEnt := CacheEntry{
 		Status:   resp.StatusCode,
 		Header:   cloneHeader(resp.Header),
 		Body:     body,
-		StoredAt: time.Now().Unix(),
+		StoredAt: now.Unix(),
 		Hash32:   crc32.ChecksumIEEE(body),
+		RevalidatedAt: now.UnixNano(),
+		RevalidatedBy: by,
 	}
 	newEnt.Header.Del("Content-Length")
 
-	cur, ok := s.ram.Peek(key)
-	if !ok {
-		cur, ok = s.disk.Peek(key)
-	}
-	if ok && cur.Hash32 == newEnt.Hash32 {
-		return
+	if hasCur && cur.Hash32 == newEnt.Hash32 {
+		// Content is identical, but we still refresh StoredAt and revalidation
+		// metadata so the entry doesn't remain stale forever.
+		s.ram.Put(key, newEnt, s.disk, s.overflowLog)
+		s.disk.PutAsync(key, newEnt)
+		return res
 	}
 
 	s.ram.Put(key, newEnt, s.disk, s.overflowLog)
 	s.disk.PutAsync(key, newEnt)
+	res.changed = true
+	return res
 }
 
-func (s *Service) warmupLoop(every time.Duration) {
-	t := time.NewTicker(every)
+type warmupSummary struct {
+	match   string
+	urls    int
+	changed int
+	took    time.Duration
+	rps     float64
+	minRT   time.Duration
+	avgRT   time.Duration
+	maxRT   time.Duration
+}
+
+func (s *Service) warmupGroupLoop(rule *Rule) {
+	sem := make(chan struct{}, rule.warmMax)
+	results := make(chan revalResult, rule.warmMax*4)
+
+	queued := make(map[string]struct{})
+	queue := make([]string, 0, 1024)
+
+	var inflight int
+	var batchStart time.Time
+	var urls, changed int
+	var minRT, maxRT, sumRT time.Duration
+
+	resetBatch := func() {
+		batchStart = time.Time{}
+		urls, changed = 0, 0
+		minRT, maxRT, sumRT = 0, 0, 0
+	}
+
+	var lastLog time.Time
+	var pending *warmupSummary
+	var logTimer *time.Timer
+	stopTimer := func() {
+		if logTimer != nil {
+			logTimer.Stop()
+			logTimer = nil
+		}
+	}
+	defer stopTimer()
+
+	makeSummary := func() warmupSummary {
+		took := time.Since(batchStart)
+		if batchStart.IsZero() {
+			took = 0
+		}
+		var rps float64
+		if took > 0 {
+			rps = float64(urls) / took.Seconds()
+		}
+		avg := time.Duration(0)
+		if urls > 0 {
+			avg = sumRT / time.Duration(urls)
+		}
+		return warmupSummary{
+			match:   rule.Match,
+			urls:    urls,
+			changed: changed,
+			took:    took,
+			rps:     rps,
+			minRT:   minRT,
+			avgRT:   avg,
+			maxRT:   maxRT,
+		}
+	}
+
+	maybeFinish := func() {
+		if batchStart.IsZero() {
+			return
+		}
+		if inflight != 0 || len(queue) != 0 {
+			return
+		}
+
+		// drained
+		if s.cfg.Logging.logRevalidationEveryDur > 0 {
+			sum := makeSummary()
+			interval := s.cfg.Logging.logRevalidationEveryDur
+			now := time.Now()
+			nextAt := lastLog.Add(interval)
+			if lastLog.IsZero() || !now.Before(nextAt) {
+				log.Printf(
+					"Revalidated for match %q: %d URLs, %d changed, Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
+					sum.match, sum.urls, sum.changed, sum.took.Truncate(time.Millisecond), sum.rps,
+					sum.minRT.Truncate(time.Millisecond), sum.avgRT.Truncate(time.Millisecond), sum.maxRT.Truncate(time.Millisecond),
+				)
+				lastLog = now
+				pending = nil
+				stopTimer()
+			} else {
+				pending = &sum
+				wait := time.Until(nextAt)
+				if wait < 0 {
+					wait = 0
+				}
+				if logTimer == nil {
+					logTimer = time.NewTimer(wait)
+				} else {
+					logTimer.Reset(wait)
+				}
+			}
+		}
+		resetBatch()
+	}
+
+	dispatch := func() {
+		for inflight < rule.warmMax && len(queue) > 0 {
+			key := queue[0]
+			queue = queue[1:]
+			delete(queued, key)
+
+			inflight++
+			sem <- struct{}{}
+			s.wg.Add(1)
+			go func(k string) {
+				defer s.wg.Done()
+				defer func() { <-sem }()
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				results <- s.revalidateOnce(ctx, k, k, "", "warmup")
+			}(key)
+		}
+	}
+
+	refresh := func() {
+		keys := s.keysByLastAccessDesc(rule)
+		if len(keys) == 0 {
+			return
+		}
+		if batchStart.IsZero() {
+			batchStart = time.Now()
+		}
+		for _, k := range keys {
+			if _, ok := queued[k]; ok {
+				continue
+			}
+			queued[k] = struct{}{}
+			queue = append(queue, k)
+		}
+	}
+
+	t := time.NewTicker(rule.warmEvery)
 	defer t.Stop()
+
 	for {
+		var timerCh <-chan time.Time
+		if logTimer != nil {
+			timerCh = logTimer.C
+		}
 		select {
 		case <-s.stopCh:
 			return
 		case <-t.C:
-			keys := s.allKeysSnapshot()
-			for _, key := range keys {
-				select {
-				case <-s.stopCh:
-					return
-				default:
+			refresh()
+			dispatch()
+		case res := <-results:
+			inflight--
+			if !batchStart.IsZero() {
+				urls++
+				if res.changed {
+					changed++
 				}
-				s.warmKey(key)
+				sumRT += res.dur
+				if minRT == 0 || res.dur < minRT {
+					minRT = res.dur
+				}
+				if res.dur > maxRT {
+					maxRT = res.dur
+				}
 			}
+			dispatch()
+			maybeFinish()
+		case <-timerCh:
+			if pending != nil {
+				log.Printf(
+					"Revalidated for match %q: %d URLs, %d changed, Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
+					pending.match, pending.urls, pending.changed, pending.took.Truncate(time.Millisecond), pending.rps,
+					pending.minRT.Truncate(time.Millisecond), pending.avgRT.Truncate(time.Millisecond), pending.maxRT.Truncate(time.Millisecond),
+				)
+				lastLog = time.Now()
+				pending = nil
+			}
+			stopTimer()
 		}
 	}
 }
 
-func (s *Service) warmKey(key string) {
-	select {
-	case s.bgSem <- struct{}{}:
-	default:
-		return
+func (s *Service) keysByLastAccessDesc(rule *Rule) []string {
+	access := s.snapshotAccessTimes()
+	if len(access) == 0 {
+		return nil
 	}
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		defer func() { <-s.bgSem }()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		s.revalidateOnce(ctx, key, key, "")
-	}()
+	items := make([]struct {
+		k  string
+		ts int64
+	}, 0, len(access))
+	for k, ts := range access {
+		if !rule.Matches(k) {
+			continue
+		}
+		items = append(items, struct {
+			k  string
+			ts int64
+		}{k: k, ts: ts})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].ts == items[j].ts {
+			return items[i].k < items[j].k
+		}
+		return items[i].ts > items[j].ts
+	})
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, it.k)
+	}
+	return out
+}
+
+func (s *Service) snapshotAccessTimes() map[string]int64 {
+	// merge RAM and disk access times; keep the latest timestamp.
+	ram := s.ram.SnapshotAccessTimes()
+	disk := s.disk.SnapshotAccessTimes()
+	out := make(map[string]int64, len(ram)+len(disk))
+	for k, ts := range disk {
+		out[k] = ts
+	}
+	for k, ts := range ram {
+		if cur, ok := out[k]; !ok || ts > cur {
+			out[k] = ts
+		}
+	}
+	return out
 }
 
 func (s *Service) allKeysSnapshot() []string {
@@ -533,6 +776,16 @@ type diskCache struct {
 
 	ops  chan diskOp
 	done chan struct{}
+}
+
+func (d *diskCache) SnapshotAccessTimes() map[string]int64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make(map[string]int64, len(d.index))
+	for k, m := range d.index {
+		out[k] = m.LastAccess
+	}
+	return out
 }
 
 func (d *diskCache) TotalSize() int64 {
@@ -770,11 +1023,12 @@ func (d *diskCache) evictSome() {
 // ---- ram cache ----
 
 type ramItem struct {
-	key  string
-	ent  CacheEntry
-	size int64
-	prev *ramItem
-	next *ramItem
+	key        string
+	ent        CacheEntry
+	size       int64
+	lastAccess int64
+	prev       *ramItem
+	next       *ramItem
 }
 
 type ramCache struct {
@@ -824,6 +1078,7 @@ func (c *ramCache) Get(key string, nowUnix int64) (CacheEntry, bool) {
 	if !ok {
 		return CacheEntry{}, false
 	}
+	it.lastAccess = nowUnix
 	c.moveToFront(it)
 	return it.ent, true
 }
@@ -857,11 +1112,13 @@ func (c *ramCache) Put(key string, ent CacheEntry, disk *diskCache, overflowLog 
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := time.Now().Unix()
 
 	if it, ok := c.items[key]; ok {
 		c.total -= it.size
 		it.ent = ent
 		it.size = sz
+		it.lastAccess = now
 		c.total += sz
 		c.moveToFront(it)
 		return
@@ -879,10 +1136,20 @@ func (c *ramCache) Put(key string, ent CacheEntry, disk *diskCache, overflowLog 
 		overflowLog.Printf("RAM cache overflow, evicting")
 	}
 
-	it := &ramItem{key: key, ent: ent, size: sz}
+	it := &ramItem{key: key, ent: ent, size: sz, lastAccess: now}
 	c.items[key] = it
 	c.addToFront(it)
 	c.total += sz
+}
+
+func (c *ramCache) SnapshotAccessTimes() map[string]int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[string]int64, len(c.items))
+	for k, it := range c.items {
+		out[k] = it.lastAccess
+	}
+	return out
 }
 
 func (c *ramCache) evictToDiskLocked(disk *diskCache) {
