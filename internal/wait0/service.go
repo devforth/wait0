@@ -368,7 +368,6 @@ func (s *Service) statsLoop(every time.Duration) {
 			rssFileStr := "n/a"
 			rssShmemStr := "n/a"
 			rssRollupStr := "n/a"
-			smapsDetails := ""
 			if smapsOK {
 				if v, ok := smapsVals["Anonymous"]; ok {
 					rssAnonStr = formatBytes(v)
@@ -382,10 +381,9 @@ func (s *Service) statsLoop(every time.Duration) {
 				if v, ok := smapsVals["Rss"]; ok {
 					rssRollupStr = formatBytes(v)
 				}
-				smapsDetails = formatSmapsRollup(smapsVals)
 			}
 			log.Printf(
-				"Cached: Paths: %d, RAM usage: %s, Disk usage: %s, RSS: %s, RSSRollup: %s, RSSSplit: anon=%s file=%s shmem=%s, SmapsRollup: %s, GoAlloc: %s, Resp Min/avg/max %s/%s/%s",
+				"Cached: Paths: %d, RAM usage: %s, Disk usage: %s, RSS: %s, RSSRollup: %s, RSSSplit: anon=%s file=%s shmem=%s, GoAlloc: %s, Resp Min/avg/max %s/%s/%s",
 				cachedPaths,
 				formatBytes(ramTotal),
 				formatBytes(diskTotal),
@@ -394,7 +392,6 @@ func (s *Service) statsLoop(every time.Duration) {
 				rssAnonStr,
 				rssFileStr,
 				rssShmemStr,
-				smapsDetails,
 				formatBytes(ms.Alloc),
 				formatBytes(ss.MinRespBytes),
 				formatBytes(ss.AvgRespBytes),

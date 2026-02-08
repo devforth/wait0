@@ -87,7 +87,7 @@ urlsDiscover:
 
 logging:
   # use this to analyze cache and RAM stats, e.g:
-  # 2026-02-08 13:56:15 2026/02/08 11:56:15.116381 Cached: Paths: 7010, RAM usage: 6.4mb, Disk usage: 6.4mb, RSS: 136.7mb, RSSRollup: 138.1mb, RSSSplit: anon=132.1mb file=n/a shmem=n/a, SmapsRollup: 00400000-7fffd0061000 ---p 00000000 00=0b AnonHugePages=0b Anonymous=132.1mb FilePmdMapped=0b KSM=0b LazyFree=0b Locked=0b Private_Clean=6.1mb Private_Dirty=132.1mb Private_Hugetlb=0b Pss=138.1mb Pss_Anon=132.1mb Pss_Dirty=132.1mb Pss_File=6.1mb Pss_Shmem=0b Referenced=138.1mb Rss=138.1mb Shared_Clean=4kb Shared_Dirty=0b Shared_Hugetlb=0b ShmemPmdMapped=0b Swap=0b SwapPss=0b, GoAlloc: 73.1mb, Resp Min/avg/max 0b/0b/0b
+  # 2026-02-08 13:56:15 2026/02/08 11:56:15.116381 Cached: Paths: 7010, RAM usage: 6.4mb, Disk usage: 6.4mb, RSS: 136.7mb, RSSRollup: 138.1mb, RSSSplit: anon=132.1mb file=n/a shmem=n/a, GoAlloc: 73.1mb, Resp Min/avg/max 0b/0b/0b
   log_stats_every: '1m'
   # log warmup stats for each rule after a warmup batch drains:
   # 2026-02-08 13:56:09 2026/02/08 11:56:09.053192 Revalidated for match "PathPrefix(/)": 7010 URLs (unchanged=0 updated=2000 deleted=0 ignoredStatus=0 ignoredCC=0 errors=5010 updated+errors=7010), Took: 2.081s, RPS: 3367.34, resp time min/avg/max - 27ms/248ms/1.898s
