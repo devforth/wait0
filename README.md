@@ -31,7 +31,7 @@ For extream performance on SSR like next.js/nuxt.js or any other "slow" server s
 Create Dockerfile:
 
 ```yaml
-FROM wait0:latest
+FROM devforth/wait0:latest
 ADD wait0.yaml /wait0.yaml
 EXPOSE 8082
 ```
@@ -46,13 +46,25 @@ services:
       - "8082:8082"
 ```
 
+Or simply attach wait0.yaml via volume if you have config on server:
+
+```yaml
+services:
+  wait0:
+    image: devforth/wait0:latest
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./wait0.yaml:/wait0.yaml:ro
+```
+
 Config `wait0.yaml`:
 
 ```yaml
 storage:
   # request path is cached as RAM->disk->origin, stops at first hit
   ram:
-    max: '100m'
+    max: '100m' # buffer for LRU cache, in fact RSS might be higher due to Go overhead
   disk:
     max: '1g'
 
