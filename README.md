@@ -1,4 +1,3 @@
-
 # wait0
 
 Extreamly fast cache-first dynamic HTTP proxy cacher with revalidate-under-the-hood strategy. For extream performance on SSR like next.js/nuxt.js or any other "slow" server side rendering.
@@ -57,12 +56,8 @@ server:
   port: 8082
   origin: 'http://localhost:8080'
   
-logging:
-  log_stats_every: '10s'
-  log_revalidation_every: '20s'
-  # if not set/empty, stats are not collected or logged
-  # log stats when enabled logs
-  # Cached: Paths: 12, RAM usage: 1.2mb, Disk usage: 0b, Resp Min/avg/max 12b/120b/1024kb
+
+  
 
 rules:
   - match: PathPrefix(/api) | PathPrefix(/admin)
@@ -80,7 +75,36 @@ rules:
     warmUp:
       runEvery: '10m'
       maxRequestsAtATime: 5
+
+logging:
+  # use this to analyze cache and RAM stats, e.g:
+  # 2026-02-08 13:56:15 2026/02/08 11:56:15.116381 Cached: Paths: 7010, RAM usage: 6.4mb, Disk usage: 6.4mb, RSS: 136.7mb, RSSRollup: 138.1mb, RSSSplit: anon=132.1mb file=n/a shmem=n/a, SmapsRollup: 00400000-7fffd0061000 ---p 00000000 00=0b AnonHugePages=0b Anonymous=132.1mb FilePmdMapped=0b KSM=0b LazyFree=0b Locked=0b Private_Clean=6.1mb Private_Dirty=132.1mb Private_Hugetlb=0b Pss=138.1mb Pss_Anon=132.1mb Pss_Dirty=132.1mb Pss_File=6.1mb Pss_Shmem=0b Referenced=138.1mb Rss=138.1mb Shared_Clean=4kb Shared_Dirty=0b Shared_Hugetlb=0b ShmemPmdMapped=0b Swap=0b SwapPss=0b, GoAlloc: 73.1mb, Resp Min/avg/max 0b/0b/0b
+  log_stats_every: '1m'
+
+  # use this to see revalidation stats for each rule:
+  # 2026-02-08 13:56:09 2026/02/08 11:56:09.053192 Revalidated for match "PathPrefix(/)": 7010 URLs (unchanged=0 updated=2000 deleted=0 ignoredStatus=0 ignoredCC=0 errors=5010 updated+errors=7010), Took: 2.081s, RPS: 3367.34, resp time min/avg/max - 27ms/248ms/1.898s
+  log_revalidation_every: '1m'
 ```
+
+## Redeployment caveats
+
+In Nuxt/Next and similar SSR setups, HTML pages often reference versioned static assets (usually hashed filenames). After a redeploy those filenames can change, and you typically **should not** keep old static files around.
+
+If old HTML is still cached in wait0, it may reference static files that are no longer available (or not yet present in a given CDN/geo). This can cause broken pages after redeploy.
+
+To avoid this, invalidate all wait0 caches, by enforcing a docker service restart:
+
+e.g. in compose:
+
+```yaml
+docker compose restart wait0
+```
+
+Both RAM and disk caches are cleared on restart, so all stale HTML is removed and new HTML with correct static asset references is cached.
+
+If you need to pre-warm cache after redeploy, it is recommended to use a sitemap.
+
+
 
 # For developers
 
