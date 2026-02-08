@@ -66,7 +66,10 @@ func NewService(cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	disk, err := newDiskCache("./data/leveldb", diskMax)
+	// Disk cache is explicitly invalidated on every restart.
+	// This is done efficiently by deleting the LevelDB directory before opening.
+	invalidateDiskOnStart := envBool("WAIT0_INVALIDATE_DISK_CACHE_ON_START", true)
+	disk, err := newDiskCache("./data/leveldb", diskMax, invalidateDiskOnStart)
 	if err != nil {
 		return nil, err
 	}
@@ -980,7 +983,12 @@ func (d *diskCache) HasKey(key string) bool {
 	return ok
 }
 
-func newDiskCache(path string, maxBytes int64) (*diskCache, error) {
+func newDiskCache(path string, maxBytes int64, invalidateOnStart bool) (*diskCache, error) {
+	if invalidateOnStart {
+		// Efficient invalidation: remove the DB directory (no key iteration).
+		// Ignore errors when it doesn't exist.
+		_ = os.RemoveAll(path)
+	}
 	db, err := leveldb.OpenFile(path, nil)
 	if err != nil {
 		return nil, err
