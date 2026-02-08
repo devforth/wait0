@@ -32,6 +32,8 @@ type Service struct {
 	wg     sync.WaitGroup
 
 	overflowLog *rateLimitedLogger
+
+	stats *statsCollector
 }
 
 func NewService(cfg Config) (*Service, error) {
@@ -43,7 +45,6 @@ func NewService(cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	disk, err := newDiskCache("./data/leveldb", diskMax)
 	if err != nil {
 		return nil, err
@@ -57,6 +58,15 @@ func NewService(cfg Config) (*Service, error) {
 		bgSem:       make(chan struct{}, 32),
 		stopCh:      make(chan struct{}),
 		overflowLog: newRateLimitedLogger(1 * time.Minute),
+	}
+
+	if cfg.Logging.logStatsEveryDur > 0 {
+		s.stats = newStatsCollector()
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.statsLoop(cfg.Logging.logStatsEveryDur)
+		}()
 	}
 
 	warmEvery := minWarmInterval(cfg.Rules)
@@ -117,7 +127,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().Unix()
 	if ent, ok := s.ram.Get(key, now); ok {
-		writeEntry(w, ent, "hit")
+		s.writeEntryWithStats(w, ent, "hit")
 		if rule != nil && rule.expDur > 0 && isStale(ent, rule.expDur) {
 			s.revalidateAsync(key, r, rule)
 		}
@@ -126,7 +136,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 
 	if ent, ok := s.disk.Get(key); ok {
 		s.ram.Put(key, ent, s.disk, s.overflowLog)
-		writeEntry(w, ent, "hit")
+		s.writeEntryWithStats(w, ent, "hit")
 		if rule != nil && rule.expDur > 0 && isStale(ent, rule.expDur) {
 			s.revalidateAsync(key, r, rule)
 		}
@@ -143,16 +153,16 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	if statusKind == "ignore-by-status" {
 		s.ram.Delete(key)
 		s.disk.Delete(key)
-		writeEntry(w, respEnt, "ignore-by-status")
+		s.writeEntryWithStats(w, respEnt, "ignore-by-status")
 		return
 	}
 	if !cacheable {
-		writeEntry(w, respEnt, "bypass")
+		s.writeEntryWithStats(w, respEnt, "bypass")
 		return
 	}
 
 	s.store(key, respEnt)
-	writeEntry(w, respEnt, "miss")
+	s.writeEntryWithStats(w, respEnt, "miss")
 }
 
 func (s *Service) pickRule(path string) *Rule {
@@ -243,7 +253,55 @@ func (s *Service) proxyPass(w http.ResponseWriter, r *http.Request, wait0 string
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
+	s.writeEntryWithStats(w, ent, wait0)
+}
+
+func (s *Service) writeEntryWithStats(w http.ResponseWriter, ent CacheEntry, wait0 string) {
 	writeEntry(w, ent, wait0)
+	if s.stats != nil {
+		switch wait0 {
+		case "hit", "miss":
+			s.stats.Observe(len(ent.Body))
+		}
+	}
+}
+
+func (s *Service) statsLoop(every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-t.C:
+			ss := s.stats.Snapshot()
+			cachedPaths := s.cachedPathsCount()
+			ramTotal := uint64(s.ram.TotalSize())
+			diskTotal := uint64(s.disk.TotalSize())
+			log.Printf(
+				"Cached: Paths: %d, RAM usage: %s, Disk usage: %s, Resp Min/avg/max %s/%s/%s",
+				cachedPaths,
+				formatBytes(ramTotal),
+				formatBytes(diskTotal),
+				formatBytes(ss.MinRespBytes),
+				formatBytes(ss.AvgRespBytes),
+				formatBytes(ss.MaxRespBytes),
+			)
+		}
+	}
+}
+
+func (s *Service) cachedPathsCount() int {
+	// Union count without building a combined map.
+	ramKeys := s.ram.Keys()
+	diskCount := s.disk.KeyCount()
+	intersect := 0
+	for _, k := range ramKeys {
+		if s.disk.HasKey(k) {
+			intersect++
+		}
+	}
+	return len(ramKeys) + diskCount - intersect
 }
 
 func (s *Service) fetchFromOrigin(r *http.Request) (CacheEntry, bool, string, error) {
@@ -346,6 +404,7 @@ func (s *Service) revalidateOnce(ctx context.Context, key, path, query string) {
 	if err != nil {
 		return
 	}
+	req.Header.Set("X-Dbg-Revalidate-At", time.Now().UTC().Format(time.RFC3339Nano))
 	req.Header.Set("Accept-Encoding", "identity")
 
 	resp, err := s.httpClient.Do(req)
@@ -472,6 +531,25 @@ type diskCache struct {
 
 	ops  chan diskOp
 	done chan struct{}
+}
+
+func (d *diskCache) TotalSize() int64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.totalSize
+}
+
+func (d *diskCache) KeyCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.index)
+}
+
+func (d *diskCache) HasKey(key string) bool {
+	d.mu.Lock()
+	_, ok := d.index[key]
+	d.mu.Unlock()
+	return ok
 }
 
 func newDiskCache(path string, maxBytes int64) (*diskCache, error) {
@@ -709,6 +787,12 @@ type ramCache struct {
 
 func newRAMCache(maxBytes int64) *ramCache {
 	return &ramCache{maxBytes: maxBytes, items: map[string]*ramItem{}}
+}
+
+func (c *ramCache) TotalSize() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.total
 }
 
 func (c *ramCache) Keys() []string {

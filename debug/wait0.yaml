@@ -4,6 +4,11 @@ storage:
   disk:
     max: '1g'
 
+logging:
+  log_stats_every: '10s'
+  # log stats when enabled logs
+  # Cached: Paths: 12, RAM usage: 1.2mb, Disk usage: 0b, Resp Min/avg/max 12b/120b/1024kb
+
 server:
   port: 8082
   origin: 'http://host.docker.internal:8080'
@@ -17,4 +22,4 @@ rules:
     bypassWhenCookies:
       - sessionid
     expiration: '10s'
-    wormUp: '10m'
+    warmUp: '30s'

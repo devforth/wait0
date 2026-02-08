@@ -56,6 +56,12 @@ storage:
 server:
   port: 8082
   origin: 'http://localhost:8080'
+  
+logging:
+  log_stats_every: '10s'
+  # if not set/empty, stats are not collected or logged
+  # log stats when enabled logs
+  # Cached: Paths: 12, RAM usage: 1.2mb, Disk usage: 0b, Resp Min/avg/max 12b/120b/1024kb
 
 rules:
   - match: PathPrefix(/api) | PathPrefix(/admin)
@@ -70,7 +76,7 @@ rules:
     expiration: '1m'
 
     # automatic scheduller which checks all known URLs in origin 
-    wormUp: '10m' 
+    warmUp: '10m' 
 ```
 
 # For developers

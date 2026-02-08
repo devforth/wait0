@@ -25,6 +25,11 @@ type Config struct {
 		Origin string `yaml:"origin"`
 	} `yaml:"server"`
 
+	Logging struct {
+		LogStatsEvery    string        `yaml:"log_stats_every"`
+		logStatsEveryDur time.Duration `yaml:"-"`
+	} `yaml:"logging"`
+
 	Rules []Rule `yaml:"rules"`
 }
 
@@ -34,7 +39,7 @@ type Rule struct {
 	Bypass            bool     `yaml:"bypass"`
 	BypassWhenCookies []string `yaml:"bypassWhenCookies"`
 	Expiration        string   `yaml:"expiration"`
-	WormUp            string   `yaml:"wormUp"`
+	WarmUp            string   `yaml:"warmUp"`
 
 	// compiled
 	matchers []pathPrefixMatcher
@@ -63,6 +68,17 @@ func LoadConfig(path string) (Config, error) {
 	}
 	cfg.Server.Origin = strings.TrimRight(cfg.Server.Origin, "/")
 
+	if cfg.Logging.LogStatsEvery != "" {
+		d, err := time.ParseDuration(cfg.Logging.LogStatsEvery)
+		if err != nil {
+			return Config{}, fmt.Errorf("logging.log_stats_every: %w", err)
+		}
+		if d <= 0 {
+			return Config{}, fmt.Errorf("logging.log_stats_every: must be > 0")
+		}
+		cfg.Logging.logStatsEveryDur = d
+	}
+
 	for i := range cfg.Rules {
 		r := &cfg.Rules[i]
 		ms, err := parseMatch(r.Match)
@@ -77,10 +93,10 @@ func LoadConfig(path string) (Config, error) {
 			}
 			r.expDur = d
 		}
-		if r.WormUp != "" {
-			d, err := time.ParseDuration(r.WormUp)
+		if r.WarmUp != "" {
+			d, err := time.ParseDuration(r.WarmUp)
 			if err != nil {
-				return Config{}, fmt.Errorf("rules[%d].wormUp: %w", i, err)
+				return Config{}, fmt.Errorf("rules[%d].warmUp: %w", i, err)
 			}
 			r.warmDur = d
 		}
