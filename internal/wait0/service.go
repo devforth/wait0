@@ -479,11 +479,11 @@ func (s *Service) revalidateOnce(ctx context.Context, key, path, query, by strin
 
 	now := time.Now().UTC()
 	newEnt := CacheEntry{
-		Status:   resp.StatusCode,
-		Header:   cloneHeader(resp.Header),
-		Body:     body,
-		StoredAt: now.Unix(),
-		Hash32:   crc32.ChecksumIEEE(body),
+		Status:        resp.StatusCode,
+		Header:        cloneHeader(resp.Header),
+		Body:          body,
+		StoredAt:      now.Unix(),
+		Hash32:        crc32.ChecksumIEEE(body),
 		RevalidatedAt: now.UnixNano(),
 		RevalidatedBy: by,
 	}
