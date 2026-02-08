@@ -305,11 +305,20 @@ func (s *Service) statsLoop(every time.Duration) {
 			cachedPaths := s.cachedPathsCount()
 			ramTotal := uint64(s.ram.TotalSize())
 			diskTotal := uint64(s.disk.TotalSize())
+			var ms runtime.MemStats
+			runtime.ReadMemStats(&ms)
+			rssBytes, ok := processRSSBytes()
+			rssStr := "n/a"
+			if ok {
+				rssStr = formatBytes(rssBytes)
+			}
 			log.Printf(
-				"Cached: Paths: %d, RAM usage: %s, Disk usage: %s, Resp Min/avg/max %s/%s/%s",
+				"Cached: Paths: %d, RAM usage: %s, Disk usage: %s, RSS: %s, GoAlloc: %s, Resp Min/avg/max %s/%s/%s",
 				cachedPaths,
 				formatBytes(ramTotal),
 				formatBytes(diskTotal),
+				rssStr,
+				formatBytes(ms.Alloc),
 				formatBytes(ss.MinRespBytes),
 				formatBytes(ss.AvgRespBytes),
 				formatBytes(ss.MaxRespBytes),
