@@ -27,7 +27,7 @@ rules:
       - sessionid
     expiration: '10s'
     warmUp:
-      runEvery: '30s'
+      runEvery: '10s'
       # Max number of in-flight warm-up (revalidation) requests at once.
       # Warm-up candidates beyond this limit should be queued and continued
       # across subsequent warmUp ticks until fully drained.

@@ -3,10 +3,12 @@ package wait0
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/gob"
 	"hash/crc32"
 	"io"
 	"log"
+	mrand "math/rand"
 	"net/http"
 	"runtime"
 	"sort"
@@ -32,6 +34,7 @@ type Service struct {
 	wg     sync.WaitGroup
 
 	overflowLog *rateLimitedLogger
+	hashLog     *rateLimitedLogger
 
 	stats *statsCollector
 }
@@ -58,6 +61,7 @@ func NewService(cfg Config) (*Service, error) {
 		bgSem:       make(chan struct{}, 32),
 		stopCh:      make(chan struct{}),
 		overflowLog: newRateLimitedLogger(1 * time.Minute),
+		hashLog:     newRateLimitedLogger(1 * time.Minute),
 	}
 
 	if cfg.Logging.logStatsEveryDur > 0 {
@@ -312,12 +316,39 @@ func (s *Service) statsLoop(every time.Duration) {
 			if ok {
 				rssStr = formatBytes(rssBytes)
 			}
+
+			smapsVals, smapsOK := processSmapsRollupBytes()
+			rssAnonStr := "n/a"
+			rssFileStr := "n/a"
+			rssShmemStr := "n/a"
+			rssRollupStr := "n/a"
+			smapsDetails := ""
+			if smapsOK {
+				if v, ok := smapsVals["Anonymous"]; ok {
+					rssAnonStr = formatBytes(v)
+				}
+				if v, ok := smapsVals["File"]; ok {
+					rssFileStr = formatBytes(v)
+				}
+				if v, ok := smapsVals["Shmem"]; ok {
+					rssShmemStr = formatBytes(v)
+				}
+				if v, ok := smapsVals["Rss"]; ok {
+					rssRollupStr = formatBytes(v)
+				}
+				smapsDetails = formatSmapsRollup(smapsVals)
+			}
 			log.Printf(
-				"Cached: Paths: %d, RAM usage: %s, Disk usage: %s, RSS: %s, GoAlloc: %s, Resp Min/avg/max %s/%s/%s",
+				"Cached: Paths: %d, RAM usage: %s, Disk usage: %s, RSS: %s, RSSRollup: %s, RSSSplit: anon=%s file=%s shmem=%s, SmapsRollup: %s, GoAlloc: %s, Resp Min/avg/max %s/%s/%s",
 				cachedPaths,
 				formatBytes(ramTotal),
 				formatBytes(diskTotal),
 				rssStr,
+				rssRollupStr,
+				rssAnonStr,
+				rssFileStr,
+				rssShmemStr,
+				smapsDetails,
 				formatBytes(ms.Alloc),
 				formatBytes(ss.MinRespBytes),
 				formatBytes(ss.AvgRespBytes),
@@ -450,7 +481,10 @@ func (s *Service) revalidateOnce(ctx context.Context, key, path, query, by strin
 	if err != nil {
 		return revalResult{ok: false, changed: false, dur: time.Since(start)}
 	}
-	req.Header.Set("X-Dbg-Revalidate-At", time.Now().UTC().Format(time.RFC3339Nano))
+	req.Header.Set("X-Wait0-Revalidate-At", time.Now().UTC().Format(time.RFC3339Nano))
+	entropy := randomString(8)
+	req.Header.Set("X-Wait0-Revalidate-Entropy", entropy)
+
 	req.Header.Set("Accept-Encoding", "identity")
 
 	resp, err := s.httpClient.Do(req)
@@ -655,17 +689,53 @@ func (s *Service) warmupGroupLoop(rule *Rule) {
 	t := time.NewTicker(rule.warmEvery)
 	defer t.Stop()
 
+	stopping := false
+	stopCh := s.stopCh // local so we can nil it after first signal (avoid select starvation)
+
 	for {
 		var timerCh <-chan time.Time
-		if logTimer != nil {
+		if logTimer != nil && !stopping {
 			timerCh = logTimer.C
 		}
-		select {
-		case <-s.stopCh:
+
+		// If shutting down and nothing is in-flight, exit (safe: no worker can still be sending).
+		if stopping && inflight == 0 {
+			// Optional: flush a final summary immediately (no delayed timer) if a batch was active.
+			if !batchStart.IsZero() && s.cfg.Logging.logRevalidationEveryDur > 0 {
+				sum := makeSummary()
+				log.Printf(
+					"Revalidated for match %q: %d URLs, %d changed, Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
+					sum.match, sum.urls, sum.changed, sum.took.Truncate(time.Millisecond), sum.rps,
+					sum.minRT.Truncate(time.Millisecond), sum.avgRT.Truncate(time.Millisecond), sum.maxRT.Truncate(time.Millisecond),
+				)
+			}
 			return
+		}
+
+		select {
+		case <-stopCh:
+			// Stop dispatching new work, but keep draining results until inflight == 0.
+			stopping = true
+			stopCh = nil // critical: prevent this always-ready case from starving results
+			t.Stop()
+
+			// Drop any queued (not-yet-dispatched) warmups.
+			for k := range queued {
+				delete(queued, k)
+			}
+			queue = queue[:0]
+
+			// Avoid waiting on delayed log timers during shutdown.
+			pending = nil
+			stopTimer()
+
 		case <-t.C:
+			if stopping {
+				continue
+			}
 			refresh()
 			dispatch()
+
 		case res := <-results:
 			inflight--
 			if !batchStart.IsZero() {
@@ -681,8 +751,11 @@ func (s *Service) warmupGroupLoop(rule *Rule) {
 					maxRT = res.dur
 				}
 			}
-			dispatch()
-			maybeFinish()
+			if !stopping {
+				dispatch()
+				maybeFinish()
+			}
+
 		case <-timerCh:
 			if pending != nil {
 				log.Printf(
@@ -1235,8 +1308,40 @@ func decodeGob(b []byte, v any) error {
 	return dec.Decode(v)
 }
 
+func randomString(n int) string {
+	if n <= 0 {
+		return ""
+	}
+
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	// Rejection sampling to avoid modulo bias.
+	const max = byte(62 * 4) // 248
+
+	out := make([]byte, 0, n)
+	buf := make([]byte, n)
+	for len(out) < n {
+		if _, err := rand.Read(buf); err != nil {
+			for len(out) < n {
+				out = append(out, alphabet[mrand.Intn(len(alphabet))])
+			}
+			break
+		}
+		for _, b := range buf {
+			if len(out) >= n {
+				break
+			}
+			if b >= max {
+				continue
+			}
+			out = append(out, alphabet[int(b)%len(alphabet)])
+		}
+	}
+	return string(out)
+}
+
 func init() {
 	// Ensure http.Header is registered for gob.
 	gob.Register(http.Header{})
+	mrand.Seed(time.Now().UnixNano())
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 }
