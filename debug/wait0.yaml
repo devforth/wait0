@@ -6,12 +6,15 @@ storage:
 
 logging:
   log_stats_every: '10s'
+  
   # log stats when enabled logs
   # Cached: Paths: 12, RAM usage: 1.2mb, Disk usage: 0b, Resp Min/avg/max 12b/120b/1024kb
-
+  log_revalidation_every: '20s'
+  
 server:
   port: 8082
   origin: 'http://host.docker.internal:8080'
+
 
 rules:
   - match: PathPrefix(/api) | PathPrefix(/admin)
@@ -22,4 +25,9 @@ rules:
     bypassWhenCookies:
       - sessionid
     expiration: '10s'
-    warmUp: '30s'
+    warmUp:
+      runEvery: '30s'
+      # Max number of in-flight warm-up (revalidation) requests at once.
+      # Warm-up candidates beyond this limit should be queued and continued
+      # across subsequent warmUp ticks until fully drained.
+      maxRequestsAtATime: 5

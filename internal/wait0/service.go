@@ -71,6 +71,8 @@ func NewService(cfg Config) (*Service, error) {
 
 	warmEvery := minWarmInterval(cfg.Rules)
 	if warmEvery > 0 {
+		log.Printf("warmup tick interval: %s (min warmUp among rules)", warmEvery)
+
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
