@@ -1,5 +1,8 @@
 # wait0
 
+- GitHub: https://github.com/devforth/wait0
+- Docker Hub: https://hub.docker.com/r/devforth/wait0
+
 Extreamly fast cache-first dynamic HTTP proxy cacher with revalidate-under-the-hood strategy (SWR + warm up). 
 
 For extream performance on SSR like next.js/nuxt.js or any other "slow" server side rendering.
@@ -19,12 +22,6 @@ For extream performance on SSR like next.js/nuxt.js or any other "slow" server s
 - Optionally wait0 can warm up from sitemaps so first users get hits!
 
 
-## Under the hood
-
-- First it checks RAM-cache for the URL, if exists, serves it instantly and revalidates in background if revalidate condition is met. 
-- Revalidated content calculates quick hash and check hash in storage, if hash is different, updates cache with new content and hash (read-safe, write-atomic)
-- If RAM storage is full, it moves 10% of least recently used items to disk storage (based on leveldb) and removes them from RAM, if disk storage is full, it evicts 10% of least recently used items - deletes them from disk storage. Then it puts new item to RAM storage (by prechecking if it can fit in RAM, if not, it directly puts to disk storage if it can fit)
-- if some storage is overflowin it drops log warning, not ofter then once per minute.
 
 ## Ussage
 
@@ -132,6 +129,13 @@ Both RAM and disk caches are cleared on restart, so all stale HTML is removed an
 If you need to pre-warm cache after redeploy, it is recommended to use a sitemap.
 
 
+
+## Under the hood
+
+- First it checks RAM-cache for the URL, if exists, serves it instantly and revalidates in background if revalidate condition is met. 
+- Revalidated content calculates quick hash and check hash in storage, if hash is different, updates cache with new content and hash (read-safe, write-atomic)
+- If RAM storage is full, it moves 10% of least recently used items to disk storage (based on leveldb) and removes them from RAM, if disk storage is full, it evicts 10% of least recently used items - deletes them from disk storage. Then it puts new item to RAM storage (by prechecking if it can fit in RAM, if not, it directly puts to disk storage if it can fit)
+- if some storage is overflowin it drops log warning, not ofter then once per minute.
 
 # For developers
 
