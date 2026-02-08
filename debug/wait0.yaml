@@ -5,10 +5,11 @@ storage:
     max: '1g'
 
 logging:
-  log_stats_every: '10s'
-  
   # log stats when enabled logs
   # Cached: Paths: 12, RAM usage: 1.2mb, Disk usage: 0b, Resp Min/avg/max 12b/120b/1024kb
+  log_stats_every: '10s'
+
+  # Revalidated for match "PathPrefix(xx) | PathPrefix(yy)": X URLs, Y changed, Took: 20s, RPS: 10, resp time min/avg/max - 10ms/20ms/1s
   log_revalidation_every: '20s'
   
 server:
