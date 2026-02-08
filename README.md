@@ -1,18 +1,22 @@
 # wait0
 
-Extreamly fast cache-first dynamic HTTP proxy cacher with revalidate-under-the-hood strategy. For extream performance on SSR like next.js/nuxt.js or any other "slow" server side rendering.
+Extreamly fast cache-first dynamic HTTP proxy cacher with revalidate-under-the-hood strategy (SWR + warm up). 
+
+For extream performance on SSR like next.js/nuxt.js or any other "slow" server side rendering.
 
 ## Mantras
 
 - For non-bypass URLs, always serves from instant cache, which revalidates in background
-- Only dynamic responses are cached like which have headers `Cache-Control: no-cache` or `Cache-Control: no-store` 
-- Adds x-wait0: hit|miss|bypass|ignore-by-cookie|ignore-by-status header to response to indicate cache status
-- Never changes Cache-Control headers.
+- Only dynamic responses are cached which have one of headers `Cache-Control: no-cache` or `Cache-Control: no-store` or `Cache-Control: max-age=0` (or their combination)
+- Adds headers for debug, e.g. x-wait0: hit|miss|bypass|ignore-by-cookie|ignore-by-status header to response to indicate cache status
+- Never changes Cache-Control or any existing headers from origin
 - Only GET requests are cached
 - Only 2xx responses are cached, if non-2xx happens, cache is instantly invalidated
 - Simple, fast & lightweight, one file configuration
 - Bypass if some cookie exists (you define name) to prevent cookie-specific issues
 - No query/fragment in cache key to prevent cache thrashing, only path is used as cache key.
+- When wait0 starts - cache is empty (even disk one). 
+- Optionally wait0 can warm up from sitemaps so first users get hits!
 
 
 ## Under the hood
@@ -46,17 +50,16 @@ Config `wait0.yaml`:
 
 ```yaml
 storage:
-  # cache is received as RAM->disk->origin, cached first in RAM
+  # request path is cached as RAM->disk->origin, stops at first hit
   ram:
     max: '100m'
   disk:
     max: '1g'
 
 server:
+  # wait0 listens on this port and proxies to origin
   port: 8082
   origin: 'http://localhost:8080'
-  
-
   
 
 rules:
@@ -98,7 +101,7 @@ logging:
   log_url_autodiscover: true
 ```
 
-## Redeployment caveats
+## Redeployment pitfall
 
 In Nuxt/Next and similar SSR setups, HTML pages often reference versioned static assets (usually hashed filenames). After a redeploy those filenames can change, and you typically **should not** keep old static files around.
 
@@ -130,10 +133,9 @@ go run ./cmd/wait0 -config ./wait0.yaml
 Debug stack (origin + wait0):
 
 ```bash
-./debug-compose
-curl -i http://localhost:8082/
-curl -i http://localhost:8082/
+bash debug/debug.sh
+# get origin and wait0 logs:
+curl -i http://localhost:8080/xx
+curl -i http://localhost:8082/xx
 
-# cleanup
-docker compose -f debug-compose.yml down -v
 ```

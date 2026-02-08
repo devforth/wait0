@@ -5,13 +5,13 @@ services:
       - "8080:8080"
 
   wait0:
-    build: .
+    build: ..
     depends_on:
       - origin
     ports:
       - "8082:8082"
     volumes:
-      - ./debug/wait0.yaml:/wait0.yaml:ro
+      - ./wait0.yaml:/wait0.yaml:ro
       - wait0-data:/data
 
 volumes:
