@@ -35,7 +35,10 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 | File | Purpose |
 |------|---------|
 | cmd/wait0/main.go | Bootstraps config/service, starts HTTP server, handles graceful shutdown |
-| internal/wait0/service.go | Main request handling path, cache lookup/store flow, and background revalidation |
+| internal/wait0/service_core.go | Service composition root: lifecycle, initialization, worker startup |
+| internal/wait0/handler.go | Main request handling path and cache hit/miss/bypass flow |
+| internal/wait0/revalidate.go | Background and on-demand revalidation logic |
+| internal/wait0/cache_ram.go / cache_disk.go | RAM + LevelDB cache implementations |
 | internal/wait0/config.go | YAML configuration loading and rule parsing |
 | debug/debug-compose.yml | Spins up reproducible local debug environment |
 | Dockerfile | Defines production image for running wait0 |
