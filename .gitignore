@@ -10,3 +10,5 @@
 coverage.out
 coverage.internal.filtered.out
 coverage-summary.txt
+
+bin/

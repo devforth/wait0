@@ -32,3 +32,17 @@ func TestWriteEntryAndHeaders(t *testing.T) {
 		t.Fatalf("expected expose headers")
 	}
 }
+
+func TestSetWait0Headers_ExposeHeaderNoDuplicate(t *testing.T) {
+	h := http.Header{}
+	h.Set("Access-Control-Expose-Headers", "X-Wait0, X-Other")
+	SetWait0Headers(h, "miss")
+	SetWait0Headers(h, "hit")
+
+	if got := h.Get("X-Wait0"); got != "hit" {
+		t.Fatalf("X-Wait0 = %q", got)
+	}
+	if got := h.Get("Access-Control-Expose-Headers"); got != "X-Wait0, X-Other" {
+		t.Fatalf("Access-Control-Expose-Headers = %q", got)
+	}
+}
