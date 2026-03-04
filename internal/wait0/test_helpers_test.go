@@ -10,6 +10,7 @@ import (
 
 	"wait0/internal/wait0/proxy"
 	"wait0/internal/wait0/revalidation"
+	wstats "wait0/internal/wait0/stats"
 )
 
 var stopOnceByService sync.Map // map[*Service]*sync.Once
@@ -48,10 +49,10 @@ func newTestService(t *testing.T, origin string, rules []Rule) *Service {
 		disk:                  disk,
 		bgSem:                 make(chan struct{}, 8),
 		stopCh:                make(chan struct{}),
-		overflowLog:           newRateLimitedLogger(time.Hour),
-		hashLog:               newRateLimitedLogger(time.Hour),
-		unchangedLog:          newRateLimitedLogger(time.Hour),
-		errorLog:              newRateLimitedLogger(time.Hour),
+		overflowLog:           wstats.NewRateLimitedLogger(time.Hour),
+		hashLog:               wstats.NewRateLimitedLogger(time.Hour),
+		unchangedLog:          wstats.NewRateLimitedLogger(time.Hour),
+		errorLog:              wstats.NewRateLimitedLogger(time.Hour),
 		sendRevalidateMarkers: true,
 	}
 	s.reval = revalidation.NewController(

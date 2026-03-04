@@ -18,7 +18,20 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 │   └── wait0/
 │       └── main.go                # Program entrypoint and HTTP server lifecycle
 ├── internal/
-│   └── wait0/                     # Core service modules (config, cache, routing, warmup, stats)
+│   └── wait0/
+│       ├── service_core.go        # Service composition root and lifecycle wiring
+│       ├── handler.go             # Root HTTP entrypoint delegating to proxy module
+│       ├── config.go              # YAML schema parsing + validation
+│       ├── cache_ram.go           # Root cache facade (wraps cache module)
+│       ├── cache_disk.go          # Root cache facade (wraps cache module)
+│       ├── *_runtime_adapter.go   # Root adapters that inject Service deps into modules
+│       ├── auth/                  # Shared bearer authentication
+│       ├── invalidation/          # /wait0/invalidate API + async workers
+│       ├── proxy/                 # Request handling/origin fetch/response headers
+│       ├── revalidation/          # Revalidate and warmup orchestration
+│       ├── discovery/             # Sitemap discovery and URL normalization
+│       ├── stats/                 # Metrics collector, periodic stats loop, proc probes
+│       └── cache/                 # Cache internals (RAM + LevelDB + codec)
 ├── debug/
 │   ├── debug-compose.yml          # Local debug stack (origin + wait0)
 │   ├── wait0.yaml                 # Debug configuration example
@@ -35,10 +48,11 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 | File | Purpose |
 |------|---------|
 | cmd/wait0/main.go | Bootstraps config/service, starts HTTP server, handles graceful shutdown |
-| internal/wait0/service_core.go | Service composition root: lifecycle, initialization, worker startup |
-| internal/wait0/handler.go | Main request handling path and cache hit/miss/bypass flow |
-| internal/wait0/revalidate.go | Background and on-demand revalidation logic |
-| internal/wait0/cache_ram.go / cache_disk.go | RAM + LevelDB cache implementations |
+| internal/wait0/service_core.go | Root composition: constructs module controllers and adapters |
+| internal/wait0/handler.go | HTTP entrypoint delegating to `proxy.Controller` |
+| internal/wait0/proxy/controller.go | Main request handling path and cache hit/miss/bypass flow |
+| internal/wait0/revalidation/controller.go | Async revalidation and warmup orchestration |
+| internal/wait0/cache_ram.go / cache_disk.go | Root cache facades wrapping `internal/wait0/cache` |
 | internal/wait0/config.go | YAML configuration loading and rule parsing |
 | debug/debug-compose.yml | Spins up reproducible local debug environment |
 | Dockerfile | Defines production image for running wait0 |

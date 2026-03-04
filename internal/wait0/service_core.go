@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"wait0/internal/wait0/auth"
+	"wait0/internal/wait0/discovery"
 	"wait0/internal/wait0/invalidation"
 	"wait0/internal/wait0/proxy"
 	"wait0/internal/wait0/revalidation"
+	wstats "wait0/internal/wait0/stats"
 )
 
 type Service struct {
@@ -28,19 +30,20 @@ type Service struct {
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 
-	overflowLog  *rateLimitedLogger
-	hashLog      *rateLimitedLogger
-	unchangedLog *rateLimitedLogger
-	errorLog     *rateLimitedLogger
+	overflowLog  *wstats.RateLimitedLogger
+	hashLog      *wstats.RateLimitedLogger
+	unchangedLog *wstats.RateLimitedLogger
+	errorLog     *wstats.RateLimitedLogger
 
 	sendRevalidateMarkers bool
 
-	stats *statsCollector
+	stats *wstats.Collector
 
 	invAuth *auth.Authenticator
 	inv     *invalidation.Controller
 	proxy   *proxy.Controller
 	reval   *revalidation.Controller
+	disco   *discovery.Controller
 }
 
 func envBool(name string, def bool) bool {
@@ -79,10 +82,10 @@ func NewService(cfg Config) (*Service, error) {
 		disk:                  disk,
 		bgSem:                 make(chan struct{}, 32),
 		stopCh:                make(chan struct{}),
-		overflowLog:           newRateLimitedLogger(1 * time.Minute),
-		hashLog:               newRateLimitedLogger(1 * time.Minute),
-		unchangedLog:          newRateLimitedLogger(10 * time.Second),
-		errorLog:              newRateLimitedLogger(10 * time.Second),
+		overflowLog:           wstats.NewRateLimitedLogger(1 * time.Minute),
+		hashLog:               wstats.NewRateLimitedLogger(1 * time.Minute),
+		unchangedLog:          wstats.NewRateLimitedLogger(10 * time.Second),
+		errorLog:              wstats.NewRateLimitedLogger(10 * time.Second),
 		sendRevalidateMarkers: envBool("WAIT0_SEND_REVALIDATE_MARKERS", true),
 	}
 
@@ -121,21 +124,42 @@ func NewService(cfg Config) (*Service, error) {
 		s.errorLog,
 	)
 	s.proxy = proxy.NewController(newProxyRuntimeAdapter(s))
+	s.disco = discovery.NewController(
+		discovery.Config{
+			Origin:          cfg.Server.Origin,
+			Sitemaps:        append([]string(nil), cfg.URLsDiscover.Sitemaps...),
+			InitialDelay:    cfg.URLsDiscover.initialDelayDur,
+			RediscoverEvery: cfg.URLsDiscover.rediscoverEveryDur,
+			LogAutodiscover: cfg.Logging.LogURLAutodiscover,
+		},
+		newDiscoveryRuntimeAdapter(s),
+		s.stopCh,
+		&s.wg,
+		log.Default(),
+	)
 	if cfg.Server.Invalidation.Enabled {
 		log.Printf("invalidation API enabled: queueSize=%d workers=%d maxBodyBytes=%d maxPaths=%d maxTags=%d hardLimits=%t", cfg.Server.Invalidation.QueueSize, cfg.Server.Invalidation.WorkerConcurrency, cfg.Server.Invalidation.MaxBodyBytes, cfg.Server.Invalidation.MaxPaths, cfg.Server.Invalidation.MaxTags, cfg.Server.Invalidation.HardLimits)
 	}
 
 	if cfg.Logging.logStatsEveryDur > 0 {
-		s.stats = newStatsCollector()
+		s.stats = wstats.NewCollector()
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			s.statsLoop(cfg.Logging.logStatsEveryDur)
+			wstats.Loop(wstats.LoopConfig{
+				Every:     cfg.Logging.logStatsEveryDur,
+				StopCh:    s.stopCh,
+				Collector: s.stats,
+				Cache:     statsCacheIndex{s: s},
+				Logger:    log.Default(),
+			})
 		}()
 	}
 
 	s.startWarmupGroups()
-	s.startURLsDiscover()
+	if s.disco != nil {
+		s.disco.Start()
+	}
 
 	return s, nil
 }

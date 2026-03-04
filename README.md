@@ -217,8 +217,8 @@ make dev
 Coverage policy:
 - `internal/wait0` minimum coverage threshold: `80%`
 - Explicit exclusions from threshold calculation:
-  - `internal/wait0/proc_linux.go`
-  - `internal/wait0/proc_other.go`
+  - `internal/wait0/stats/proc_linux.go`
+  - `internal/wait0/stats/proc_other.go`
 
 Docker quick commands:
 

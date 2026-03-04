@@ -38,7 +38,7 @@ func (c *ramCache) Delete(key string) {
 	c.inner.Delete(key)
 }
 
-func (c *ramCache) Put(key string, ent CacheEntry, disk *diskCache, overflowLog *rateLimitedLogger) {
+func (c *ramCache) Put(key string, ent CacheEntry, disk *diskCache, overflowLog cache.Logger) {
 	var d *cache.Disk
 	if disk != nil {
 		d = disk.inner

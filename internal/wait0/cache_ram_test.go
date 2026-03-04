@@ -5,12 +5,14 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	wstats "wait0/internal/wait0/stats"
 )
 
 func TestRAMCache_BasicOperations(t *testing.T) {
 	c := newRAMCache(1024)
 	ent := CacheEntry{Status: 200, Header: make(http.Header), Body: []byte("a")}
-	c.Put("/a", ent, nil, newRateLimitedLogger(time.Hour))
+	c.Put("/a", ent, nil, wstats.NewRateLimitedLogger(time.Hour))
 
 	if c.TotalSize() == 0 {
 		t.Fatalf("expected non-zero total size")
@@ -39,7 +41,7 @@ func TestRAMCache_EvictToDisk(t *testing.T) {
 	defer disk.close()
 
 	c := newRAMCache(200)
-	logr := newRateLimitedLogger(time.Hour)
+	logr := wstats.NewRateLimitedLogger(time.Hour)
 	for i := 0; i < 10; i++ {
 		k := string(rune('a' + i))
 		c.Put(k, CacheEntry{Status: 200, Header: make(http.Header), Body: []byte("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")}, disk, logr)

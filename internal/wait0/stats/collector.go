@@ -1,4 +1,4 @@
-package wait0
+package stats
 
 import (
 	"fmt"
@@ -7,20 +7,20 @@ import (
 	"sync/atomic"
 )
 
-type statsCollector struct {
+type Collector struct {
 	totalResponses atomic.Uint64
 	totalRespBytes atomic.Uint64
 	minRespBytes   atomic.Uint64
 	maxRespBytes   atomic.Uint64
 }
 
-func newStatsCollector() *statsCollector {
-	s := &statsCollector{}
+func NewCollector() *Collector {
+	s := &Collector{}
 	s.minRespBytes.Store(math.MaxUint64)
 	return s
 }
 
-func (s *statsCollector) Observe(respBytes int) {
+func (s *Collector) Observe(respBytes int) {
 	if respBytes < 0 {
 		respBytes = 0
 	}
@@ -49,7 +49,7 @@ func (s *statsCollector) Observe(respBytes int) {
 	}
 }
 
-type statsSnapshot struct {
+type Snapshot struct {
 	TotalResponses uint64
 	TotalRespBytes uint64
 	MinRespBytes   uint64
@@ -57,18 +57,18 @@ type statsSnapshot struct {
 	AvgRespBytes   uint64
 }
 
-func (s *statsCollector) Snapshot() statsSnapshot {
+func (s *Collector) Snapshot() Snapshot {
 	count := s.totalResponses.Load()
 	total := s.totalRespBytes.Load()
 	minv := s.minRespBytes.Load()
 	maxv := s.maxRespBytes.Load()
 	if count == 0 {
-		return statsSnapshot{}
+		return Snapshot{}
 	}
 	if minv == math.MaxUint64 {
 		minv = 0
 	}
-	return statsSnapshot{
+	return Snapshot{
 		TotalResponses: count,
 		TotalRespBytes: total,
 		MinRespBytes:   minv,
@@ -77,7 +77,7 @@ func (s *statsCollector) Snapshot() statsSnapshot {
 	}
 }
 
-func formatBytes(b uint64) string {
+func FormatBytes(b uint64) string {
 	const (
 		kb = 1024
 		mb = 1024 * kb
@@ -87,15 +87,15 @@ func formatBytes(b uint64) string {
 		return fmt.Sprintf("%db", b)
 	}
 	if b < mb {
-		return trimFloat(fmt.Sprintf("%.1f", float64(b)/kb)) + "kb"
+		return TrimFloat(fmt.Sprintf("%.1f", float64(b)/kb)) + "kb"
 	}
 	if b < gb {
-		return trimFloat(fmt.Sprintf("%.1f", float64(b)/mb)) + "mb"
+		return TrimFloat(fmt.Sprintf("%.1f", float64(b)/mb)) + "mb"
 	}
-	return trimFloat(fmt.Sprintf("%.1f", float64(b)/gb)) + "gb"
+	return TrimFloat(fmt.Sprintf("%.1f", float64(b)/gb)) + "gb"
 }
 
-func trimFloat(s string) string {
+func TrimFloat(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.TrimSuffix(s, ".0")
 	return s

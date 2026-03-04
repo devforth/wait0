@@ -1,4 +1,4 @@
-package wait0
+package discovery
 
 import (
 	"bytes"
@@ -7,33 +7,79 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
-type sitemapDoc struct {
+type Logger interface {
+	Printf(format string, v ...any)
+}
+
+type Config struct {
+	Origin          string
+	Sitemaps        []string
+	InitialDelay    time.Duration
+	RediscoverEvery time.Duration
+	LogAutodiscover bool
+}
+
+type Rule struct {
+	Bypass bool
+}
+
+type Entry struct {
+	Status       int
+	Header       http.Header
+	Body         []byte
+	StoredAt     int64
+	Hash32       uint32
+	Inactive     bool
+	DiscoveredBy string
+}
+
+type Runtime interface {
+	PickRule(path string) *Rule
+	PeekRAM(path string) (Entry, bool)
+	PeekDisk(path string) (Entry, bool)
+	PutDisk(path string, ent Entry)
+	Do(req *http.Request) (*http.Response, error)
+}
+
+type Controller struct {
+	cfg    Config
+	rt     Runtime
+	stopCh <-chan struct{}
+	wg     *sync.WaitGroup
+	logger Logger
+}
+
+type SitemapDoc struct {
 	URLs     []string `xml:"url>loc"`
 	Sitemaps []string `xml:"sitemap>loc"`
 }
 
-func (s *Service) startURLsDiscover() {
-	if len(s.cfg.URLsDiscover.Sitemaps) == 0 {
+func NewController(cfg Config, rt Runtime, stopCh <-chan struct{}, wg *sync.WaitGroup, logger Logger) *Controller {
+	return &Controller{cfg: cfg, rt: rt, stopCh: stopCh, wg: wg, logger: logger}
+}
+
+func (c *Controller) Start() {
+	if len(c.cfg.Sitemaps) == 0 {
 		return
 	}
 
-	initDelay := s.cfg.URLsDiscover.initialDelayDur
-	period := s.cfg.URLsDiscover.rediscoverEveryDur
+	initDelay := c.cfg.InitialDelay
+	period := c.cfg.RediscoverEvery
 
-	s.wg.Add(1)
+	c.wg.Add(1)
 	go func() {
-		defer s.wg.Done()
+		defer c.wg.Done()
 
 		if initDelay > 0 {
 			select {
-			case <-s.stopCh:
+			case <-c.stopCh:
 				return
 			case <-time.After(initDelay):
 			}
@@ -42,12 +88,12 @@ func (s *Service) startURLsDiscover() {
 		runOnce := func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			stored, ignored, err := s.discoverURLsOnce(ctx)
+			stored, ignored, err := c.DiscoverOnce(ctx)
 			if err != nil {
-				log.Printf("urlsDiscover: error: %v", err)
+				c.logger.Printf("urlsDiscover: error: %v", err)
 				return
 			}
-			log.Printf("urlsDiscover: stored=%d ignored=%d", stored, ignored)
+			c.logger.Printf("urlsDiscover: stored=%d ignored=%d", stored, ignored)
 		}
 
 		runOnce()
@@ -59,7 +105,7 @@ func (s *Service) startURLsDiscover() {
 		defer t.Stop()
 		for {
 			select {
-			case <-s.stopCh:
+			case <-c.stopCh:
 				return
 			case <-t.C:
 				runOnce()
@@ -68,22 +114,22 @@ func (s *Service) startURLsDiscover() {
 	}()
 }
 
-func (s *Service) discoverURLsOnce(ctx context.Context) (stored int, ignored int, _ error) {
+func (c *Controller) DiscoverOnce(ctx context.Context) (stored int, ignored int, _ error) {
 	seenSitemaps := map[string]struct{}{}
-	queue := make([]string, 0, len(s.cfg.URLsDiscover.Sitemaps))
-	for _, sm := range s.cfg.URLsDiscover.Sitemaps {
+	queue := make([]string, 0, len(c.cfg.Sitemaps))
+	for _, sm := range c.cfg.Sitemaps {
 		sm = strings.TrimSpace(sm)
 		if sm == "" {
 			continue
 		}
-		queue = append(queue, s.normalizeMaybeRelativeURL(sm))
+		queue = append(queue, c.NormalizeMaybeRelativeURL(sm))
 	}
 
 	for len(queue) > 0 {
 		select {
 		case <-ctx.Done():
 			return stored, ignored, ctx.Err()
-		case <-s.stopCh:
+		case <-c.stopCh:
 			return stored, ignored, nil
 		default:
 		}
@@ -95,7 +141,7 @@ func (s *Service) discoverURLsOnce(ctx context.Context) (stored int, ignored int
 		}
 		seenSitemaps[smURL] = struct{}{}
 
-		doc, err := s.fetchAndParseSitemap(ctx, smURL)
+		doc, err := c.FetchAndParseSitemap(ctx, smURL)
 		if err != nil {
 			return stored, ignored, fmt.Errorf("fetch sitemap %q: %w", smURL, err)
 		}
@@ -105,19 +151,19 @@ func (s *Service) discoverURLsOnce(ctx context.Context) (stored int, ignored int
 			if nested == "" {
 				continue
 			}
-			queue = append(queue, s.normalizeMaybeRelativeURL(nested))
+			queue = append(queue, c.NormalizeMaybeRelativeURL(nested))
 		}
 
 		fit := 0
 		ignoredThis := 0
 		for _, loc := range doc.URLs {
-			path := normalizePathFromLoc(loc)
+			path := NormalizePathFromLoc(loc)
 			if path == "" {
 				ignoredThis++
 				continue
 			}
 
-			rule := s.pickRule(path)
+			rule := c.rt.PickRule(path)
 			if rule == nil || rule.Bypass {
 				ignoredThis++
 				ignored++
@@ -125,16 +171,15 @@ func (s *Service) discoverURLsOnce(ctx context.Context) (stored int, ignored int
 			}
 			fit++
 
-			// Don't overwrite active content; only seed if missing or inactive.
-			if ent, ok := s.ram.Peek(path); ok && !ent.Inactive {
+			if ent, ok := c.rt.PeekRAM(path); ok && !ent.Inactive {
 				continue
 			}
-			if ent, ok := s.disk.Peek(path); ok && !ent.Inactive {
+			if ent, ok := c.rt.PeekDisk(path); ok && !ent.Inactive {
 				continue
 			}
 
 			now := time.Now().UTC()
-			seed := CacheEntry{
+			seed := Entry{
 				Status:       http.StatusOK,
 				Header:       make(http.Header),
 				Body:         []byte{},
@@ -142,14 +187,13 @@ func (s *Service) discoverURLsOnce(ctx context.Context) (stored int, ignored int
 				Hash32:       0,
 				Inactive:     true,
 				DiscoveredBy: "sitemap",
-				// Leave RevalidatedAt/RevalidatedBy empty; warmup/user fill will set them.
 			}
-			s.disk.PutAsync(path, seed)
+			c.rt.PutDisk(path, seed)
 			stored++
 		}
 
-		if s.cfg.Logging.LogURLAutodiscover {
-			log.Printf(
+		if c.cfg.LogAutodiscover {
+			c.logger.Printf(
 				"urlsDiscover sitemap=%q urls=%d fit=%d ignored=%d",
 				smURL,
 				len(doc.URLs),
@@ -162,7 +206,7 @@ func (s *Service) discoverURLsOnce(ctx context.Context) (stored int, ignored int
 	return stored, ignored, nil
 }
 
-func (s *Service) normalizeMaybeRelativeURL(u string) string {
+func (c *Controller) NormalizeMaybeRelativeURL(u string) string {
 	u = strings.TrimSpace(u)
 	if u == "" {
 		return u
@@ -173,34 +217,31 @@ func (s *Service) normalizeMaybeRelativeURL(u string) string {
 	if !strings.HasPrefix(u, "/") {
 		u = "/" + u
 	}
-	return s.cfg.Server.Origin + u
+	return c.cfg.Origin + u
 }
 
-func (s *Service) fetchAndParseSitemap(ctx context.Context, sitemapURL string) (sitemapDoc, error) {
+func (c *Controller) FetchAndParseSitemap(ctx context.Context, sitemapURL string) (SitemapDoc, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sitemapURL, nil)
 	if err != nil {
-		return sitemapDoc{}, err
+		return SitemapDoc{}, err
 	}
 
-	resp, err := s.httpClient.Do(req)
+	resp, err := c.rt.Do(req)
 	if err != nil {
-		return sitemapDoc{}, err
+		return SitemapDoc{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return sitemapDoc{}, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return SitemapDoc{}, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return sitemapDoc{}, err
+		return SitemapDoc{}, err
 	}
 
-	// Handle .gz or gzip magic header.
-	// Be tolerant: some servers may serve a .gz URL but also apply Content-Encoding gzip,
-	// in which case Go may already decompress the body.
 	tryGzip := strings.HasSuffix(strings.ToLower(sitemapURL), ".gz") || (len(body) >= 2 && body[0] == 0x1f && body[1] == 0x8b)
 	if tryGzip {
 		if gz, err := gzip.NewReader(bytes.NewReader(body)); err == nil {
@@ -211,12 +252,11 @@ func (s *Service) fetchAndParseSitemap(ctx context.Context, sitemapURL string) (
 		}
 	}
 
-	var doc sitemapDoc
+	var doc SitemapDoc
 	if err := xml.Unmarshal(body, &doc); err != nil {
-		return sitemapDoc{}, err
+		return SitemapDoc{}, err
 	}
 
-	// Some sitemaps may include whitespace/newlines.
 	for i := range doc.URLs {
 		doc.URLs[i] = strings.TrimSpace(doc.URLs[i])
 	}
@@ -227,7 +267,7 @@ func (s *Service) fetchAndParseSitemap(ctx context.Context, sitemapURL string) (
 	return doc, nil
 }
 
-func normalizePathFromLoc(loc string) string {
+func NormalizePathFromLoc(loc string) string {
 	loc = strings.TrimSpace(loc)
 	if loc == "" {
 		return ""
@@ -245,7 +285,6 @@ func normalizePathFromLoc(loc string) string {
 		}
 		return u.Path
 	}
-	// Relative locs: treat as a path.
 	if !strings.HasPrefix(loc, "/") {
 		loc = "/" + loc
 	}

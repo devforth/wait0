@@ -1,4 +1,4 @@
-package wait0
+package stats
 
 import (
 	"log"
@@ -6,17 +6,17 @@ import (
 	"time"
 )
 
-type rateLimitedLogger struct {
+type RateLimitedLogger struct {
 	mu       sync.Mutex
 	lastAt   time.Time
 	interval time.Duration
 }
 
-func newRateLimitedLogger(interval time.Duration) *rateLimitedLogger {
-	return &rateLimitedLogger{interval: interval}
+func NewRateLimitedLogger(interval time.Duration) *RateLimitedLogger {
+	return &RateLimitedLogger{interval: interval}
 }
 
-func (l *rateLimitedLogger) Printf(format string, args ...any) {
+func (l *RateLimitedLogger) Printf(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()

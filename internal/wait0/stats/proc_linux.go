@@ -1,6 +1,6 @@
 //go:build linux
 
-package wait0
+package stats
 
 import (
 	"bufio"
@@ -11,9 +11,7 @@ import (
 	"strings"
 )
 
-// processRSSBytes returns the process resident set size (RSS) in bytes.
-// It is best-effort: if /proc is unavailable or parsing fails, ok is false.
-func processRSSBytes() (rssBytes uint64, ok bool) {
+func ProcessRSSBytes() (rssBytes uint64, ok bool) {
 	b, err := os.ReadFile("/proc/self/statm")
 	if err != nil {
 		return 0, false
@@ -29,12 +27,7 @@ func processRSSBytes() (rssBytes uint64, ok bool) {
 	return rssPages * uint64(os.Getpagesize()), true
 }
 
-// processSmapsRollupBytes reads /proc/self/smaps_rollup and returns the parsed
-// fields (in bytes). This is best-effort: if unavailable or parsing fails, ok is false.
-//
-// The primary purpose is to split RSS into Anonymous/File/Shmem to distinguish
-// heap/anon growth from file-backed mmaps.
-func processSmapsRollupBytes() (vals map[string]uint64, ok bool) {
+func ProcessSmapsRollupBytes() (vals map[string]uint64, ok bool) {
 	f, err := os.Open("/proc/self/smaps_rollup")
 	if err != nil {
 		return nil, false
@@ -42,7 +35,6 @@ func processSmapsRollupBytes() (vals map[string]uint64, ok bool) {
 	defer f.Close()
 
 	sc := bufio.NewScanner(f)
-	// The rollup file is small, but bump buffer to be safe.
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	vals = make(map[string]uint64)
@@ -51,7 +43,6 @@ func processSmapsRollupBytes() (vals map[string]uint64, ok bool) {
 		if line == "" {
 			continue
 		}
-		// Format: "Key:    123 kB" (also sometimes without kB suffix).
 		colon := strings.IndexByte(line, ':')
 		if colon < 0 {
 			continue
@@ -66,7 +57,6 @@ func processSmapsRollupBytes() (vals map[string]uint64, ok bool) {
 		if err != nil {
 			continue
 		}
-		// Most values are in kB in smaps_rollup.
 		vals[key] = n * 1024
 	}
 	if err := sc.Err(); err != nil {
@@ -78,7 +68,7 @@ func processSmapsRollupBytes() (vals map[string]uint64, ok bool) {
 	return vals, true
 }
 
-func formatSmapsRollup(vals map[string]uint64) string {
+func FormatSmapsRollup(vals map[string]uint64) string {
 	if len(vals) == 0 {
 		return ""
 	}
@@ -95,7 +85,7 @@ func formatSmapsRollup(vals map[string]uint64) string {
 		}
 		b.WriteString(k)
 		b.WriteString("=")
-		b.WriteString(formatBytes(vals[k]))
+		b.WriteString(FormatBytes(vals[k]))
 	}
 	return b.String()
 }
