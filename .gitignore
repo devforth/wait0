@@ -1,0 +1,7 @@
+# AI Agent
+.codex/
+.ai-factory.json
+.ai-factory/
+.mcp.json
+# LevelDB
+data/leveldb/

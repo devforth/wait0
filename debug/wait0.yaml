@@ -30,7 +30,5 @@ rules:
 logging:
   # log stats when enabled logs
   log_stats_every: '10s'
-
   log_warmup: true
-
   log_url_autodiscover: true
