@@ -144,7 +144,7 @@ func (c *ramCache) evictToDiskLocked(disk *diskCache) {
 	if count == 0 {
 		return
 	}
-	n := max(count / 10, 1)
+	n := max(count/10, 1)
 	for range n {
 		it := c.tail
 		if it == nil {

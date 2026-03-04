@@ -143,6 +143,24 @@ go test ./...
 go run ./cmd/wait0 -config ./debug/wait0.yaml
 ```
 
+Testing and coverage gates:
+
+```bash
+# full local quality gate (tests + race + coverage threshold)
+make ci-check
+
+# or run separately
+make test
+make test-race
+make coverage
+```
+
+Coverage policy:
+- `internal/wait0` minimum coverage threshold: `80%`
+- Explicit exclusions from threshold calculation:
+  - `internal/wait0/proc_linux.go`
+  - `internal/wait0/proc_other.go`
+
 Debug stack (origin + wait0):
 
 ```bash

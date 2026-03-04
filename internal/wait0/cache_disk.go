@@ -276,7 +276,7 @@ func (d *diskCache) evictSome() {
 		return items[i].m.LastAccess < items[j].m.LastAccess
 	})
 
-	n := max(len(items) / 10, 1)
+	n := max(len(items)/10, 1)
 
 	for i := 0; i < n && i < len(items); i++ {
 		d.applyDelete(items[i].key)

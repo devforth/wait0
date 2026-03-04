@@ -3,9 +3,27 @@ package wait0
 import (
 	"net/http"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
+
+var stopOnceByService sync.Map // map[*Service]*sync.Once
+
+func stopTestService(s *Service) {
+	if s == nil || s.stopCh == nil {
+		return
+	}
+	if v, ok := stopOnceByService.Load(s); ok {
+		v.(*sync.Once).Do(func() { close(s.stopCh) })
+		return
+	}
+	select {
+	case <-s.stopCh:
+	default:
+		close(s.stopCh)
+	}
+}
 
 func newTestService(t *testing.T, origin string, rules []Rule) *Service {
 	t.Helper()
@@ -33,10 +51,12 @@ func newTestService(t *testing.T, origin string, rules []Rule) *Service {
 		sendRevalidateMarkers: true,
 	}
 
+	stopOnceByService.Store(s, &sync.Once{})
 	t.Cleanup(func() {
-		close(s.stopCh)
+		stopTestService(s)
 		s.wg.Wait()
 		s.disk.close()
+		stopOnceByService.Delete(s)
 	})
 
 	return s

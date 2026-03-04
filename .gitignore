@@ -4,4 +4,9 @@
 .ai-factory/
 .mcp.json
 # LevelDB
-data/leveldb/
+**/data/leveldb/
+
+# Coverage artifacts
+coverage.out
+coverage.internal.filtered.out
+coverage-summary.txt
