@@ -139,20 +139,27 @@ If you need to pre-warm cache after redeploy, it is recommended to use a sitemap
 How to run:
 
 ```bash
-go test ./...
+make test
 go run ./cmd/wait0 -config ./debug/wait0.yaml
 ```
 
 Testing and coverage gates:
 
 ```bash
-# full local quality gate (tests + race + coverage threshold)
+# show all available targets
+make help
+
+# full local quality gate (lint + tests + race + coverage threshold + build)
 make ci-check
 
-# or run separately
+# common commands
+make build
 make test
 make test-race
+make lint
+make fmt
 make coverage
+make dev
 ```
 
 Coverage policy:
@@ -160,6 +167,15 @@ Coverage policy:
 - Explicit exclusions from threshold calculation:
   - `internal/wait0/proc_linux.go`
   - `internal/wait0/proc_other.go`
+
+Docker quick commands:
+
+```bash
+make docker-build
+make docker-run
+make docker-logs
+make docker-stop
+```
 
 Debug stack (origin + wait0):
 

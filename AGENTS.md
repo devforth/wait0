@@ -48,3 +48,16 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 |----------|------|-------------|
 | README | README.md | Project landing page and operational guide |
 | Docker Hub notes | DOCKERHUB.md | Alias to README for Docker Hub presentation |
+
+## Build & Development Commands
+This project uses a `Makefile` for build automation.
+
+Common commands:
+- `make help` — list all available targets
+- `make test` — run unit tests
+- `make test-race` — run race-enabled tests
+- `make coverage` — run coverage gate for `internal/wait0`
+- `make lint` — run static checks (`go vet`)
+- `make build` — build the `wait0` binary
+- `make ci-check` — run full local quality gate
+- `make docker-build` / `make docker-run` — build and run the container locally
