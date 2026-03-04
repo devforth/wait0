@@ -8,6 +8,10 @@ import (
 
 func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
+	if path == invalidationEndpointPath {
+		s.handleInvalidateAPI(w, r)
+		return
+	}
 	key := path
 
 	rule := s.pickRule(path)

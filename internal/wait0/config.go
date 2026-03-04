@@ -23,7 +23,11 @@ type Config struct {
 	Server struct {
 		Port   int    `yaml:"port"`
 		Origin string `yaml:"origin"`
+
+		Invalidation InvalidationConfig `yaml:"invalidation"`
 	} `yaml:"server"`
+
+	Auth AuthConfig `yaml:"auth"`
 
 	URLsDiscover struct {
 		// NOTE: historically this was misspelled as "initalDelay" in configs.
@@ -50,6 +54,38 @@ type Config struct {
 	} `yaml:"logging"`
 
 	Rules []Rule `yaml:"rules"`
+}
+
+type InvalidationConfig struct {
+	Enabled bool `yaml:"enabled"`
+
+	QueueSize         int  `yaml:"queue_size"`
+	WorkerConcurrency int  `yaml:"worker_concurrency"`
+	MaxBodyBytes      int  `yaml:"max_body_bytes"`
+	MaxPaths          int  `yaml:"max_paths_per_request"`
+	MaxTags           int  `yaml:"max_tags_per_request"`
+	HardLimits        bool `yaml:"hard_limits"`
+
+	// Deprecated: use top-level auth.tokens with scope "invalidation:write".
+	Tokens []InvalidationTokenConfig `yaml:"tokens"`
+}
+
+type InvalidationTokenConfig struct {
+	ID       string `yaml:"id"`
+	Token    string `yaml:"token"`
+	TokenEnv string `yaml:"token_env"`
+	Role     string `yaml:"role"`
+}
+
+type AuthConfig struct {
+	Tokens []AuthTokenConfig `yaml:"tokens"`
+}
+
+type AuthTokenConfig struct {
+	ID       string   `yaml:"id"`
+	Token    string   `yaml:"token"`
+	TokenEnv string   `yaml:"token_env"`
+	Scopes   []string `yaml:"scopes"`
 }
 
 type WarmUpConfig struct {
@@ -95,6 +131,19 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("server.origin is required")
 	}
 	cfg.Server.Origin = strings.TrimRight(cfg.Server.Origin, "/")
+	cfg.Server.Invalidation.applyDefaults()
+	if err := cfg.Server.Invalidation.validate(); err != nil {
+		return Config{}, fmt.Errorf("server.invalidation: %w", err)
+	}
+	if err := cfg.Auth.validateAndResolveTokens(); err != nil {
+		return Config{}, fmt.Errorf("auth: %w", err)
+	}
+	if err := cfg.importLegacyInvalidationTokens(); err != nil {
+		return Config{}, fmt.Errorf("server.invalidation.tokens: %w", err)
+	}
+	if err := cfg.validateAuthBindings(); err != nil {
+		return Config{}, err
+	}
 
 	// urlsDiscover (optional)
 	if len(cfg.URLsDiscover.Sitemaps) > 0 {
@@ -222,4 +271,154 @@ func (r *Rule) Matches(path string) bool {
 		}
 	}
 	return false
+}
+
+func (c *InvalidationConfig) applyDefaults() {
+	if c.QueueSize <= 0 {
+		c.QueueSize = 128
+	}
+	if c.WorkerConcurrency <= 0 {
+		c.WorkerConcurrency = 4
+	}
+	if c.MaxBodyBytes <= 0 {
+		c.MaxBodyBytes = 1 << 20
+	}
+	if c.MaxPaths <= 0 {
+		c.MaxPaths = 1024
+	}
+	if c.MaxTags <= 0 {
+		c.MaxTags = 1024
+	}
+}
+
+func (c *InvalidationConfig) validate() error {
+	if c.QueueSize <= 0 {
+		return fmt.Errorf("queue_size: must be > 0")
+	}
+	if c.WorkerConcurrency <= 0 {
+		return fmt.Errorf("worker_concurrency: must be > 0")
+	}
+	if c.MaxBodyBytes <= 0 {
+		return fmt.Errorf("max_body_bytes: must be > 0")
+	}
+	if c.MaxPaths <= 0 {
+		return fmt.Errorf("max_paths_per_request: must be > 0")
+	}
+	if c.MaxTags <= 0 {
+		return fmt.Errorf("max_tags_per_request: must be > 0")
+	}
+	return nil
+}
+
+func (c *AuthConfig) validateAndResolveTokens() error {
+	ids := make(map[string]struct{}, len(c.Tokens))
+	for i := range c.Tokens {
+		t := &c.Tokens[i]
+		t.ID = strings.TrimSpace(t.ID)
+		t.Token = strings.TrimSpace(t.Token)
+		t.TokenEnv = strings.TrimSpace(t.TokenEnv)
+
+		if t.ID == "" {
+			return fmt.Errorf("tokens[%d].id: is required", i)
+		}
+		if _, ok := ids[t.ID]; ok {
+			return fmt.Errorf("tokens[%d].id: duplicate id %q", i, t.ID)
+		}
+		ids[t.ID] = struct{}{}
+
+		if t.TokenEnv != "" {
+			v := strings.TrimSpace(os.Getenv(t.TokenEnv))
+			if v != "" {
+				t.Token = v
+			}
+		}
+		if t.Token == "" {
+			return fmt.Errorf("tokens[%d]: token or token_env must resolve to a non-empty value", i)
+		}
+
+		scopes := make([]string, 0, len(t.Scopes))
+		seenScopes := make(map[string]struct{}, len(t.Scopes))
+		for _, s := range t.Scopes {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			if _, ok := seenScopes[s]; ok {
+				continue
+			}
+			seenScopes[s] = struct{}{}
+			scopes = append(scopes, s)
+		}
+		if len(scopes) == 0 {
+			return fmt.Errorf("tokens[%d].scopes: at least one scope is required", i)
+		}
+		t.Scopes = scopes
+	}
+	return nil
+}
+
+func (cfg *Config) importLegacyInvalidationTokens() error {
+	if len(cfg.Server.Invalidation.Tokens) == 0 {
+		return nil
+	}
+
+	existingByID := make(map[string]struct{}, len(cfg.Auth.Tokens))
+	for _, t := range cfg.Auth.Tokens {
+		existingByID[t.ID] = struct{}{}
+	}
+
+	for i := range cfg.Server.Invalidation.Tokens {
+		t := &cfg.Server.Invalidation.Tokens[i]
+		t.ID = strings.TrimSpace(t.ID)
+		t.Token = strings.TrimSpace(t.Token)
+		t.TokenEnv = strings.TrimSpace(t.TokenEnv)
+		t.Role = strings.TrimSpace(t.Role)
+
+		if t.ID == "" {
+			return fmt.Errorf("tokens[%d].id: is required", i)
+		}
+		if _, ok := existingByID[t.ID]; ok {
+			return fmt.Errorf("tokens[%d].id: duplicate with auth.tokens id %q", i, t.ID)
+		}
+		existingByID[t.ID] = struct{}{}
+
+		if t.TokenEnv != "" {
+			v := strings.TrimSpace(os.Getenv(t.TokenEnv))
+			if v != "" {
+				t.Token = v
+			}
+		}
+		if t.Token == "" {
+			return fmt.Errorf("tokens[%d]: token or token_env must resolve to a non-empty value", i)
+		}
+		if t.Role == "" {
+			t.Role = "invalidate_all"
+		}
+		if t.Role != "invalidate_all" {
+			return fmt.Errorf("tokens[%d].role: unsupported role %q", i, t.Role)
+		}
+
+		cfg.Auth.Tokens = append(cfg.Auth.Tokens, AuthTokenConfig{
+			ID:       t.ID,
+			Token:    t.Token,
+			TokenEnv: t.TokenEnv,
+			Scopes:   []string{invalidationWriteScope},
+		})
+	}
+
+	return nil
+}
+
+func (cfg *Config) validateAuthBindings() error {
+	if !cfg.Server.Invalidation.Enabled {
+		return nil
+	}
+	for _, t := range cfg.Auth.Tokens {
+		for _, s := range t.Scopes {
+			if s == invalidationWriteScope {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("server.invalidation: enabled=true requires at least one auth token with scope %q", invalidationWriteScope)
 }

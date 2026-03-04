@@ -22,6 +22,6 @@ type CacheEntry struct {
 	RevalidatedAt int64
 
 	// RevalidatedBy indicates what triggered the last revalidation.
-	// Expected values: "user" | "warmup".
+	// Expected values: "user" | "warmup" | "invalidate".
 	RevalidatedBy string
 }

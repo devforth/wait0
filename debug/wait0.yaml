@@ -7,6 +7,21 @@ storage:
 server:
   port: 8082
   origin: http://host.docker.internal:8080
+  invalidation:
+    enabled: true
+    queue_size: 64
+    worker_concurrency: 4
+    max_body_bytes: 1048576
+    max_paths_per_request: 1000
+    max_tags_per_request: 1000
+    hard_limits: false
+
+auth:
+  tokens:
+    - id: debug-backoffice
+      token: debug-invalidation-token
+      scopes:
+        - invalidation:write
 
 urlsDiscover:
   initalDelay: '20s'

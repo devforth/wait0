@@ -69,6 +69,24 @@ server:
   # wait0 listens on this port and proxies to origin
   port: 8082
   origin: 'http://localhost:8080'
+  invalidation:
+    enabled: true
+    queue_size: 128
+    worker_concurrency: 4
+    max_body_bytes: 1048576
+    max_paths_per_request: 1024
+    max_tags_per_request: 1024
+    # if true, reject requests above max_paths/max_tags with 400 status code.
+    # if false, process them and emit a warning log.
+    hard_limits: false
+
+auth:
+  tokens:
+    - id: backoffice
+      # use one of token or token_env
+      token_env: WAIT0_INVALIDATION_TOKEN
+      scopes:
+        - invalidation:write
 
 rules:
   - match: PathPrefix(/api) | PathPrefix(/admin)
@@ -125,6 +143,40 @@ docker compose restart wait0
 Both RAM and disk caches are cleared on restart, so all stale HTML is removed and new HTML with correct static asset references is cached.
 
 If you need to pre-warm cache after redeploy, it is recommended to use a sitemap.
+
+## Invalidation API
+
+`wait0` exposes an authenticated async invalidation endpoint:
+
+- `POST /wait0/invalidate`
+- `Authorization: Bearer <token>`
+- `Content-Type: application/json`
+
+Request body:
+
+```json
+{
+  "paths": ["/products/123", "/"],
+  "tags": ["product:123", "homepage"]
+}
+```
+
+Notes:
+- `paths`, `tags`, or both can be provided.
+- Path inputs are normalized to wait0 cache keys (path-only; query/fragment are ignored).
+- Tag invalidation matches cached entries where origin response headers contain `X-Wait0-Tag` (supports repeated and comma-separated values).
+- Invalidation runs in the background and returns `202 Accepted` immediately.
+- After invalidation, wait0 automatically re-crawls affected paths to refill cache with fresh origin responses.
+
+Example:
+
+```bash
+curl -i \
+  -X POST "http://localhost:8082/wait0/invalidate" \
+  -H "Authorization: Bearer ${WAIT0_INVALIDATION_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"paths":["/products/123"],"tags":["product:123"]}'
+```
 
 
 ## Under the hood

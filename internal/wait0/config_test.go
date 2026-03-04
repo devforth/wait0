@@ -3,6 +3,7 @@ package wait0
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -80,6 +81,7 @@ func TestLoadConfig_Errors(t *testing.T) {
 		{name: "bad match", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"BadExpr(/)\"\n"},
 		{name: "bad warmup", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    warmUp:\n      runEvery: \"\"\n      maxRequestsAtATime: 1\n"},
 		{name: "bad log stats", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nlogging:\n  log_stats_every: \"bad\"\nrules: []\n"},
+		{name: "invalidation enabled without auth scope", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\n  invalidation:\n    enabled: true\nauth:\n  tokens:\n    - id: \"x\"\n      token: \"t\"\n      scopes: [\"other:scope\"]\nrules: []\n"},
 	}
 
 	for _, tc := range tests {
@@ -92,5 +94,81 @@ func TestLoadConfig_Errors(t *testing.T) {
 				t.Fatalf("expected error")
 			}
 		})
+	}
+}
+
+func TestLoadConfig_AuthTokenEnvOverride(t *testing.T) {
+	t.Setenv("WAIT0_INV_TOKEN", "from-env-token")
+
+	cfgPath := filepath.Join(t.TempDir(), "wait0.yaml")
+	yaml := strings.TrimSpace(`
+storage:
+  ram: {max: "1m"}
+  disk: {max: "1m"}
+server:
+  origin: "http://x"
+  invalidation:
+    enabled: true
+    queue_size: 4
+    worker_concurrency: 2
+    max_body_bytes: 2048
+    max_paths_per_request: 10
+    max_tags_per_request: 10
+auth:
+  tokens:
+    - id: "backoffice"
+      token: "from-file"
+      token_env: "WAIT0_INV_TOKEN"
+      scopes: ["invalidation:write"]
+rules: []
+`) + "\n"
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.Server.Invalidation.Enabled {
+		t.Fatalf("expected invalidation enabled")
+	}
+	if got := cfg.Auth.Tokens[0].Token; got != "from-env-token" {
+		t.Fatalf("token = %q, want from-env-token", got)
+	}
+}
+
+func TestLoadConfig_LegacyInvalidationTokensStillSupported(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "wait0.yaml")
+	yaml := strings.TrimSpace(`
+storage:
+  ram: {max: "1m"}
+  disk: {max: "1m"}
+server:
+  origin: "http://x"
+  invalidation:
+    enabled: true
+    tokens:
+      - id: "legacy-backoffice"
+        token: "legacy-token"
+        role: "invalidate_all"
+rules: []
+`) + "\n"
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.Auth.Tokens) != 1 {
+		t.Fatalf("auth token count = %d, want 1", len(cfg.Auth.Tokens))
+	}
+	if got := cfg.Auth.Tokens[0].ID; got != "legacy-backoffice" {
+		t.Fatalf("legacy mapped id = %q", got)
+	}
+	if len(cfg.Auth.Tokens[0].Scopes) != 1 || cfg.Auth.Tokens[0].Scopes[0] != "invalidation:write" {
+		t.Fatalf("legacy scopes = %#v", cfg.Auth.Tokens[0].Scopes)
 	}
 }

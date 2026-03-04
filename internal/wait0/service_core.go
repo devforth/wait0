@@ -31,6 +31,11 @@ type Service struct {
 	sendRevalidateMarkers bool
 
 	stats *statsCollector
+
+	invCfg   InvalidationConfig
+	invQueue chan invalidateJob
+
+	invTokens []authToken
 }
 
 func envBool(name string, def bool) bool {
@@ -74,6 +79,32 @@ func NewService(cfg Config) (*Service, error) {
 		unchangedLog:          newRateLimitedLogger(10 * time.Second),
 		errorLog:              newRateLimitedLogger(10 * time.Second),
 		sendRevalidateMarkers: envBool("WAIT0_SEND_REVALIDATE_MARKERS", true),
+		invCfg:                cfg.Server.Invalidation,
+	}
+
+	s.invTokens = make([]authToken, 0, len(cfg.Auth.Tokens))
+	for _, t := range cfg.Auth.Tokens {
+		scopes := make(map[string]struct{}, len(t.Scopes))
+		for _, s := range t.Scopes {
+			scopes[s] = struct{}{}
+		}
+		s.invTokens = append(s.invTokens, authToken{
+			ID:     t.ID,
+			Token:  t.Token,
+			Scopes: scopes,
+		})
+	}
+	if cfg.Server.Invalidation.Enabled {
+		s.invQueue = make(chan invalidateJob, cfg.Server.Invalidation.QueueSize)
+		log.Printf(
+			"invalidation API enabled: queueSize=%d workers=%d maxBodyBytes=%d maxPaths=%d maxTags=%d hardLimits=%t",
+			cfg.Server.Invalidation.QueueSize,
+			cfg.Server.Invalidation.WorkerConcurrency,
+			cfg.Server.Invalidation.MaxBodyBytes,
+			cfg.Server.Invalidation.MaxPaths,
+			cfg.Server.Invalidation.MaxTags,
+			cfg.Server.Invalidation.HardLimits,
+		)
 	}
 
 	if cfg.Logging.logStatsEveryDur > 0 {
@@ -87,6 +118,7 @@ func NewService(cfg Config) (*Service, error) {
 
 	s.startWarmupGroups()
 	s.startURLsDiscover()
+	s.startInvalidationWorkers()
 
 	return s, nil
 }
