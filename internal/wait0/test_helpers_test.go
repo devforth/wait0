@@ -50,7 +50,6 @@ func newTestService(t *testing.T, origin string, rules []Rule) *Service {
 		bgSem:                 make(chan struct{}, 8),
 		stopCh:                make(chan struct{}),
 		overflowLog:           wstats.NewRateLimitedLogger(time.Hour),
-		hashLog:               wstats.NewRateLimitedLogger(time.Hour),
 		unchangedLog:          wstats.NewRateLimitedLogger(time.Hour),
 		errorLog:              wstats.NewRateLimitedLogger(time.Hour),
 		sendRevalidateMarkers: true,

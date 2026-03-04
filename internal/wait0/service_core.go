@@ -31,7 +31,6 @@ type Service struct {
 	wg     sync.WaitGroup
 
 	overflowLog  *wstats.RateLimitedLogger
-	hashLog      *wstats.RateLimitedLogger
 	unchangedLog *wstats.RateLimitedLogger
 	errorLog     *wstats.RateLimitedLogger
 
@@ -83,7 +82,6 @@ func NewService(cfg Config) (*Service, error) {
 		bgSem:                 make(chan struct{}, 32),
 		stopCh:                make(chan struct{}),
 		overflowLog:           wstats.NewRateLimitedLogger(1 * time.Minute),
-		hashLog:               wstats.NewRateLimitedLogger(1 * time.Minute),
 		unchangedLog:          wstats.NewRateLimitedLogger(10 * time.Second),
 		errorLog:              wstats.NewRateLimitedLogger(10 * time.Second),
 		sendRevalidateMarkers: envBool("WAIT0_SEND_REVALIDATE_MARKERS", true),
@@ -179,6 +177,16 @@ func (s *Service) Handler() http.Handler {
 	return http.HandlerFunc(s.proxy.Handle)
 }
 
+func (s *Service) pickRule(path string) *Rule {
+	for i := range s.cfg.Rules {
+		r := &s.cfg.Rules[i]
+		if r.Matches(path) {
+			return r
+		}
+	}
+	return nil
+}
+
 func (s *Service) startWarmupGroups() {
 	for i := range s.cfg.Rules {
 		r := &s.cfg.Rules[i]
@@ -197,4 +205,28 @@ func (s *Service) startWarmupGroups() {
 			})
 		}(r)
 	}
+}
+
+type statsCacheIndex struct {
+	s *Service
+}
+
+func (i statsCacheIndex) RAMKeys() []string {
+	return i.s.ram.Keys()
+}
+
+func (i statsCacheIndex) DiskKeyCount() int {
+	return i.s.disk.KeyCount()
+}
+
+func (i statsCacheIndex) DiskHasKey(key string) bool {
+	return i.s.disk.HasKey(key)
+}
+
+func (i statsCacheIndex) RAMTotalSize() uint64 {
+	return uint64(i.s.ram.TotalSize())
+}
+
+func (i statsCacheIndex) DiskTotalSize() uint64 {
+	return uint64(i.s.disk.TotalSize())
 }

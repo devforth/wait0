@@ -24,14 +24,14 @@ func TestHandle_CacheMissThenHit(t *testing.T) {
 
 	req1 := httptest.NewRequest(http.MethodGet, "http://wait0.local/page", nil)
 	w1 := httptest.NewRecorder()
-	s.handle(w1, req1)
+	s.Handler().ServeHTTP(w1, req1)
 	if got := w1.Result().Header.Get("X-Wait0"); got != "miss" {
 		t.Fatalf("first request X-Wait0 = %q, want miss", got)
 	}
 
 	req2 := httptest.NewRequest(http.MethodGet, "http://wait0.local/page", nil)
 	w2 := httptest.NewRecorder()
-	s.handle(w2, req2)
+	s.Handler().ServeHTTP(w2, req2)
 	if got := w2.Result().Header.Get("X-Wait0"); got != "hit" {
 		t.Fatalf("second request X-Wait0 = %q, want hit", got)
 	}
@@ -56,7 +56,7 @@ func TestHandle_BypassWhenCookiePresent(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://wait0.local/page", nil)
 	req.AddCookie(&http.Cookie{Name: "sessionid", Value: "abc"})
 	w := httptest.NewRecorder()
-	s.handle(w, req)
+	s.Handler().ServeHTTP(w, req)
 
 	if got := w.Result().Header.Get("X-Wait0"); got != "ignore-by-cookie" {
 		t.Fatalf("X-Wait0 = %q, want ignore-by-cookie", got)
@@ -78,7 +78,7 @@ func TestHandle_IgnoreByStatusInvalidatesRAM(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "http://wait0.local/broken", nil)
 	w := httptest.NewRecorder()
-	s.handle(w, req)
+	s.Handler().ServeHTTP(w, req)
 
 	if got := w.Result().Header.Get("X-Wait0"); got != "ignore-by-status" {
 		t.Fatalf("X-Wait0 = %q, want ignore-by-status", got)
