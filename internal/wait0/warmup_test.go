@@ -17,10 +17,12 @@ func TestWarmupHelpers_OrderAndUnion(t *testing.T) {
 	s.disk.PutAsync("/c", CacheEntry{Status: 200, Header: make(http.Header), Body: []byte("c")})
 	waitFor(t, time.Second, func() bool { return s.disk.HasKey("/c") })
 
-	s.ram.mu.Lock()
-	s.ram.items["/a"].lastAccess = 10
-	s.ram.items["/b"].lastAccess = 20
-	s.ram.mu.Unlock()
+	if !s.ram.setLastAccessForTest("/a", 10) {
+		t.Fatalf("failed to set lastAccess for /a")
+	}
+	if !s.ram.setLastAccessForTest("/b", 20) {
+		t.Fatalf("failed to set lastAccess for /b")
+	}
 
 	keys := s.keysByLastAccessDesc(&rule)
 	if len(keys) < 3 {

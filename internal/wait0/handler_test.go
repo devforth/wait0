@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+
+	"wait0/internal/wait0/proxy"
 )
 
 func TestHandle_CacheMissThenHit(t *testing.T) {
@@ -90,10 +92,10 @@ func TestHasAnyCookie(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://wait0.local/", nil)
 	req.AddCookie(&http.Cookie{Name: "session", Value: "1"})
 
-	if !hasAnyCookie(req, []string{"session"}) {
+	if !proxy.HasAnyCookie(req, []string{"session"}) {
 		t.Fatalf("expected cookie match")
 	}
-	if hasAnyCookie(req, []string{"other"}) {
+	if proxy.HasAnyCookie(req, []string{"other"}) {
 		t.Fatalf("did not expect cookie match")
 	}
 }

@@ -81,6 +81,7 @@ func TestLoadConfig_Errors(t *testing.T) {
 		{name: "bad match", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"BadExpr(/)\"\n"},
 		{name: "bad warmup", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    warmUp:\n      runEvery: \"\"\n      maxRequestsAtATime: 1\n"},
 		{name: "bad log stats", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nlogging:\n  log_stats_every: \"bad\"\nrules: []\n"},
+		{name: "duplicate auth token ids", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\n  invalidation:\n    enabled: true\nauth:\n  tokens:\n    - id: \"dup\"\n      token: \"a\"\n      scopes: [\"invalidation:write\"]\n    - id: \"dup\"\n      token: \"b\"\n      scopes: [\"invalidation:write\"]\nrules: []\n"},
 		{name: "invalidation enabled without auth scope", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\n  invalidation:\n    enabled: true\nauth:\n  tokens:\n    - id: \"x\"\n      token: \"t\"\n      scopes: [\"other:scope\"]\nrules: []\n"},
 	}
 

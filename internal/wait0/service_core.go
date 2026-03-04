@@ -8,6 +8,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"wait0/internal/wait0/auth"
+	"wait0/internal/wait0/invalidation"
+	"wait0/internal/wait0/proxy"
+	"wait0/internal/wait0/revalidation"
 )
 
 type Service struct {
@@ -32,10 +37,10 @@ type Service struct {
 
 	stats *statsCollector
 
-	invCfg   InvalidationConfig
-	invQueue chan invalidateJob
-
-	invTokens []authToken
+	invAuth *auth.Authenticator
+	inv     *invalidation.Controller
+	proxy   *proxy.Controller
+	reval   *revalidation.Controller
 }
 
 func envBool(name string, def bool) bool {
@@ -79,32 +84,45 @@ func NewService(cfg Config) (*Service, error) {
 		unchangedLog:          newRateLimitedLogger(10 * time.Second),
 		errorLog:              newRateLimitedLogger(10 * time.Second),
 		sendRevalidateMarkers: envBool("WAIT0_SEND_REVALIDATE_MARKERS", true),
-		invCfg:                cfg.Server.Invalidation,
 	}
 
-	s.invTokens = make([]authToken, 0, len(cfg.Auth.Tokens))
+	authCfgs := make([]auth.TokenConfig, 0, len(cfg.Auth.Tokens))
 	for _, t := range cfg.Auth.Tokens {
-		scopes := make(map[string]struct{}, len(t.Scopes))
-		for _, s := range t.Scopes {
-			scopes[s] = struct{}{}
-		}
-		s.invTokens = append(s.invTokens, authToken{
+		authCfgs = append(authCfgs, auth.TokenConfig{
 			ID:     t.ID,
 			Token:  t.Token,
-			Scopes: scopes,
+			Scopes: t.Scopes,
 		})
 	}
+	s.invAuth = auth.NewAuthenticator(authCfgs)
+	s.inv = invalidation.NewController(
+		invalidation.Config{
+			Enabled:           cfg.Server.Invalidation.Enabled,
+			QueueSize:         cfg.Server.Invalidation.QueueSize,
+			WorkerConcurrency: cfg.Server.Invalidation.WorkerConcurrency,
+			MaxBodyBytes:      cfg.Server.Invalidation.MaxBodyBytes,
+			MaxPaths:          cfg.Server.Invalidation.MaxPaths,
+			MaxTags:           cfg.Server.Invalidation.MaxTags,
+			HardLimits:        cfg.Server.Invalidation.HardLimits,
+		},
+		s.invAuth,
+		newInvalidationRuntimeAdapter(s),
+		s.stopCh,
+		&s.wg,
+	)
+	s.reval = revalidation.NewController(
+		newRevalidationRuntimeAdapter(s),
+		s.bgSem,
+		s.stopCh,
+		&s.wg,
+		cfg.Logging.LogWarmUp,
+		log.Default(),
+		s.unchangedLog,
+		s.errorLog,
+	)
+	s.proxy = proxy.NewController(newProxyRuntimeAdapter(s))
 	if cfg.Server.Invalidation.Enabled {
-		s.invQueue = make(chan invalidateJob, cfg.Server.Invalidation.QueueSize)
-		log.Printf(
-			"invalidation API enabled: queueSize=%d workers=%d maxBodyBytes=%d maxPaths=%d maxTags=%d hardLimits=%t",
-			cfg.Server.Invalidation.QueueSize,
-			cfg.Server.Invalidation.WorkerConcurrency,
-			cfg.Server.Invalidation.MaxBodyBytes,
-			cfg.Server.Invalidation.MaxPaths,
-			cfg.Server.Invalidation.MaxTags,
-			cfg.Server.Invalidation.HardLimits,
-		)
+		log.Printf("invalidation API enabled: queueSize=%d workers=%d maxBodyBytes=%d maxPaths=%d maxTags=%d hardLimits=%t", cfg.Server.Invalidation.QueueSize, cfg.Server.Invalidation.WorkerConcurrency, cfg.Server.Invalidation.MaxBodyBytes, cfg.Server.Invalidation.MaxPaths, cfg.Server.Invalidation.MaxTags, cfg.Server.Invalidation.HardLimits)
 	}
 
 	if cfg.Logging.logStatsEveryDur > 0 {
@@ -118,7 +136,6 @@ func NewService(cfg Config) (*Service, error) {
 
 	s.startWarmupGroups()
 	s.startURLsDiscover()
-	s.startInvalidationWorkers()
 
 	return s, nil
 }
@@ -130,7 +147,12 @@ func (s *Service) Close() {
 }
 
 func (s *Service) Handler() http.Handler {
-	return http.HandlerFunc(s.handle)
+	if s.proxy == nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		})
+	}
+	return http.HandlerFunc(s.proxy.Handle)
 }
 
 func (s *Service) startWarmupGroups() {
@@ -143,7 +165,12 @@ func (s *Service) startWarmupGroups() {
 		s.wg.Add(1)
 		go func(rule *Rule) {
 			defer s.wg.Done()
-			s.warmupGroupLoop(rule)
+			s.reval.WarmupGroupLoop(revalidation.WarmRule{
+				Match:     rule.Match,
+				WarmEvery: rule.warmEvery,
+				WarmMax:   rule.warmMax,
+				Matches:   rule.Matches,
+			})
 		}(r)
 	}
 }

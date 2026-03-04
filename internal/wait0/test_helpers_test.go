@@ -1,11 +1,15 @@
 package wait0
 
 import (
+	"log"
 	"net/http"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"wait0/internal/wait0/proxy"
+	"wait0/internal/wait0/revalidation"
 )
 
 var stopOnceByService sync.Map // map[*Service]*sync.Once
@@ -50,6 +54,17 @@ func newTestService(t *testing.T, origin string, rules []Rule) *Service {
 		errorLog:              newRateLimitedLogger(time.Hour),
 		sendRevalidateMarkers: true,
 	}
+	s.reval = revalidation.NewController(
+		newRevalidationRuntimeAdapter(s),
+		s.bgSem,
+		s.stopCh,
+		&s.wg,
+		s.cfg.Logging.LogWarmUp,
+		log.Default(),
+		s.unchangedLog,
+		s.errorLog,
+	)
+	s.proxy = proxy.NewController(newProxyRuntimeAdapter(s))
 
 	stopOnceByService.Store(s, &sync.Once{})
 	t.Cleanup(func() {

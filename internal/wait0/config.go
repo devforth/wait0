@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"wait0/internal/wait0/invalidation"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -402,7 +404,7 @@ func (cfg *Config) importLegacyInvalidationTokens() error {
 			ID:       t.ID,
 			Token:    t.Token,
 			TokenEnv: t.TokenEnv,
-			Scopes:   []string{invalidationWriteScope},
+			Scopes:   []string{invalidation.WriteScope},
 		})
 	}
 
@@ -415,10 +417,10 @@ func (cfg *Config) validateAuthBindings() error {
 	}
 	for _, t := range cfg.Auth.Tokens {
 		for _, s := range t.Scopes {
-			if s == invalidationWriteScope {
+			if s == invalidation.WriteScope {
 				return nil
 			}
 		}
 	}
-	return fmt.Errorf("server.invalidation: enabled=true requires at least one auth token with scope %q", invalidationWriteScope)
+	return fmt.Errorf("server.invalidation: enabled=true requires at least one auth token with scope %q", invalidation.WriteScope)
 }

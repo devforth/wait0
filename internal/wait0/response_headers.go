@@ -7,7 +7,6 @@ import (
 )
 
 func writeEntry(w http.ResponseWriter, ent CacheEntry, wait0 string) {
-	// copy headers
 	for k, vs := range ent.Header {
 		if strings.EqualFold(k, "x-wait0") {
 			continue
@@ -29,8 +28,6 @@ func setWait0Headers(h http.Header, wait0 string) {
 	if wait0 != "" {
 		h.Set("X-Wait0", wait0)
 	}
-	// If this is used from a browser in a CORS context, custom headers are not
-	// readable by JS unless explicitly exposed.
 	ensureExposedHeader(h, "X-Wait0")
 }
 
@@ -79,7 +76,6 @@ func ensureExposedHeader(h http.Header, name string) {
 		return
 	}
 
-	// Merge into a single comma-separated value.
 	merged := strings.Join(cur, ",")
 	for _, part := range strings.Split(merged, ",") {
 		if strings.EqualFold(strings.TrimSpace(part), name) {
