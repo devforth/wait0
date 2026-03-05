@@ -12,3 +12,4 @@ coverage.internal.filtered.out
 coverage-summary.txt
 
 bin/
+.env

@@ -21,8 +21,9 @@ auth:
     # Used by debug dashboard bridge endpoints:
     # - GET /wait0/dashboard/stats (stats:read)
     # - POST /wait0/dashboard/invalidate (invalidation:write)
-    - id: debug-backoffice
-      token: debug-token
+    - id: local-backoffice
+      # token: debug-token
+      token_env: WAIT0_API_AUTH_TOKEN
       scopes:
         - invalidation:write
         - stats:read
