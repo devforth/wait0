@@ -72,6 +72,9 @@ clean: ## Remove build and coverage artifacts
 stress: docker-stack ## Run stress test script
 	./scripts/stress.sh
 
+gen-random: ## Generate random string of specified length (default: 32)
+	./scripts/gen-random-string.sh $(length)
+
 ##@ Docker
 docker-build: ## Build Docker image
 	$(DOCKER) build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
