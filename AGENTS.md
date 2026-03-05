@@ -26,6 +26,7 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 │       ├── *_runtime_adapter.go   # Root adapters that inject Service deps into modules
 │       ├── auth/                  # Shared bearer authentication
 │       ├── invalidation/          # /wait0/invalidate API + async workers
+│       ├── statapi/               # /wait0 stats API endpoint + snapshot payloads
 │       ├── dashboard/             # /wait0/dashboard HTML + stats/invalidation bridge handlers
 │       ├── proxy/                 # Request handling/origin fetch/response headers
 │       ├── revalidation/          # Revalidate and warmup orchestration
@@ -34,14 +35,18 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 │       └── cache/                 # Cache internals (RAM + LevelDB + codec)
 ├── debug/
 │   ├── debug-compose.yml          # Local debug stack (origin + wait0)
-│   ├── wait0.yaml                 # Debug configuration example
-│   ├── debug.sh                   # Helper script for local debugging
+│   └── wait0.yaml                 # Debug configuration example
+├── docs/
+│   ├── for-developers.md          # Build, config, and operations guide
+│   └── api-endpoints.md           # Endpoint and response reference
+├── scripts/
+│   ├── coverage.sh                # Coverage helper script
+│   ├── publish.sh                 # Publishing helper script
 │   └── stress.sh                  # Stress/load helper script
 ├── Dockerfile                     # Container image build definition
 ├── README.md                      # Usage, config, behavior, and developer notes
 ├── go.mod                         # Go module definition and dependencies
-├── go.sum                         # Dependency checksums
-└── publish.sh                     # Publishing helper script
+└── go.sum                         # Dependency checksums
 ```
 
 ## Key Entry Points
@@ -64,11 +69,6 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 | For Developers | docs/for-developers.md | Build, config, and operations guide |
 | API Endpoints | docs/api-endpoints.md | Endpoint and response reference |
 | Docker Hub notes | DOCKERHUB.md | Alias to README for Docker Hub presentation |
-
-## AI Context Files
-| File | Description |
-|------|-------------|
-| .ai-factory/ARCHITECTURE.md | Architecture decisions and guidelines |
 
 ## Build & Development Commands
 This project uses a `Makefile` for build automation.

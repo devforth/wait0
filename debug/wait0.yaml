@@ -31,7 +31,7 @@ urlsDiscover:
   initalDelay: '20s'
   rediscoverEvery: '10m'
   sitemaps:
-    - https://future.devforth.io/sitemap.xml
+    - https://devforth.io/sitemap.xml
 
 rules:
   - match: PathPrefix(/api) | PathPrefix(/admin) | PathPrefix(/lab)

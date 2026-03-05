@@ -69,6 +69,9 @@ dev: ## Run wait0 with debug config
 clean: ## Remove build and coverage artifacts
 	rm -rf $(BIN_DIR) coverage.out coverage.internal.filtered.out coverage-summary.txt
 
+stress: docker-stack ## Run stress test script
+	./scripts/stress.sh
+
 ##@ Docker
 docker-build: ## Build Docker image
 	$(DOCKER) build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
@@ -93,6 +96,9 @@ docker-push: ## Push Docker image to registry
 
 docker-clean: ## Remove local Docker image
 	-$(DOCKER) image rm $(DOCKER_IMAGE):$(DOCKER_TAG)
+
+docker-stack: ## Build and run debug compose stack
+	$(DOCKER) compose -f debug/debug-compose.yml up -d --build
 
 ##@ Publish
 release: ## Build and publish Docker image to Devforth DockerHub
