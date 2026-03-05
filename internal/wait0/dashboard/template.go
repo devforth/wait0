@@ -189,9 +189,11 @@ var dashboardTemplate = template.Must(template.New("dashboard").Parse(`<!doctype
       invalidationEnabled: {{if .InvalidationEnabled}}true{{else}}false{{end}},
       csrfToken: '{{.CSRFToken}}',
       maxPoints: 120,
+      invalidateStatusClearMs: 8000,
     };
 
     const history = [];
+    let invalidateStatusTimer = null;
 
     const byId = (id) => document.getElementById(id);
 
@@ -295,9 +297,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Parse(`<!doctype
 
     async function submitInvalidate(ev) {
       ev.preventDefault();
-      const status = byId('invalidate-status');
-      status.className = 'status muted';
-      status.textContent = 'Submitting...';
+      setInvalidateStatus('status muted', 'Submitting...', false);
 
       const payload = {
         paths: splitList(byId('paths').value),
@@ -315,17 +315,31 @@ var dashboardTemplate = template.Must(template.New("dashboard").Parse(`<!doctype
         });
         const body = await res.json().catch(() => ({}));
         if (res.ok) {
-          status.className = 'status ok';
-          status.textContent = JSON.stringify(body, null, 2);
+          setInvalidateStatus('status ok', JSON.stringify(body, null, 2), true);
           refreshStats();
           return;
         }
-        status.className = 'status err';
-        status.textContent = JSON.stringify(body, null, 2);
+        setInvalidateStatus('status err', JSON.stringify(body, null, 2), true);
       } catch (err) {
-        status.className = 'status err';
-        status.textContent = String(err);
+        setInvalidateStatus('status err', String(err), true);
       }
+    }
+
+    function setInvalidateStatus(className, text, autoClear) {
+      const status = byId('invalidate-status');
+      if (!status) return;
+      if (invalidateStatusTimer) {
+        clearTimeout(invalidateStatusTimer);
+        invalidateStatusTimer = null;
+      }
+      status.className = className;
+      status.textContent = text;
+      if (!autoClear) return;
+      invalidateStatusTimer = setTimeout(() => {
+        status.className = 'status muted';
+        status.textContent = '';
+        invalidateStatusTimer = null;
+      }, cfg.invalidateStatusClearMs);
     }
 
     function initInvalidationForm() {

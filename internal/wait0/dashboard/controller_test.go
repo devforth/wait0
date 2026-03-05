@@ -338,4 +338,10 @@ func TestDashboardPageContainsCSRFToken(t *testing.T) {
 	if len(m) != 2 {
 		t.Fatalf("csrf token not found in dashboard page")
 	}
+	if !strings.Contains(w.Body.String(), "setInvalidateStatus(") {
+		t.Fatalf("expected status helper wiring in dashboard page")
+	}
+	if !strings.Contains(w.Body.String(), "invalidateStatusClearMs: 8000") {
+		t.Fatalf("expected status auto-clear config in dashboard page")
+	}
 }
