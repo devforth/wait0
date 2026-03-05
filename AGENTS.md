@@ -58,7 +58,9 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 ## Documentation
 | Document | Path | Description |
 |----------|------|-------------|
-| README | README.md | Project landing page and operational guide |
+| README | README.md | Project landing page and quick start |
+| For Developers | docs/for-developers.md | Build, config, and operations guide |
+| API Endpoints | docs/api-endpoints.md | Endpoint and response reference |
 | Docker Hub notes | DOCKERHUB.md | Alias to README for Docker Hub presentation |
 
 ## Build & Development Commands
