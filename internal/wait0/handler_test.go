@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"wait0/internal/wait0/auth"
+	"wait0/internal/wait0/dashboard"
 	"wait0/internal/wait0/proxy"
 	"wait0/internal/wait0/statapi"
 )
@@ -110,6 +111,33 @@ func TestHandle_StatsEndpoint(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "http://wait0.local/wait0", nil)
 	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Result().StatusCode)
+	}
+}
+
+func TestHandle_DashboardEndpoint(t *testing.T) {
+	s := newTestService(t, "http://example.com", nil)
+	s.dash = dashboard.NewController(
+		dashboard.Config{
+			Username:         "ops",
+			Password:         "secret",
+			StatsBearerToken: "stats-token",
+		},
+		dashboard.Runtime{
+			StatsHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"cache":{"urls_total":1}}`))
+			}),
+		},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "http://wait0.local/wait0/dashboard", nil)
+	req.SetBasicAuth("ops", "secret")
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, req)
 

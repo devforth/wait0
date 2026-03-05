@@ -11,6 +11,7 @@ Complete HTTP endpoint reference for `wait0`.
 - A reverse-proxy data path for regular client requests.
 - A control endpoint for asynchronous cache invalidation.
 - A control endpoint for read-only runtime/cache statistics.
+- A Basic-Auth dashboard route with stats polling and invalidation form.
 
 Base URL examples:
 
@@ -157,7 +158,68 @@ The table below explains each field in the stats payload, including what it mean
 | `403` | `forbidden` | Token exists but lacks `stats:read` scope |
 | `405` | `method not allowed` | Non-GET request |
 
-## 3) Invalidation API
+## 3) Dashboard
+
+## Routes
+
+- `GET /wait0/dashboard`
+- `GET /wait0/dashboard/`
+- `GET /wait0/dashboard/stats`
+- `POST /wait0/dashboard/invalidate`
+
+## Auth
+
+- HTTP Basic Auth required on all dashboard routes.
+- Credentials are loaded from:
+  - `WAIT0_DASHBOARD_USERNAME`
+  - `WAIT0_DASHBOARD_PASSWORD`
+
+If either credential env variable is missing, dashboard routes are not registered and return `404`.
+
+## Behavior
+
+- `GET /wait0/dashboard` serves a lightweight HTML page with:
+  - parsed stats cards,
+  - simple charts over time (client-side in-memory history),
+  - invalidation form.
+- `GET /wait0/dashboard/stats` bridges to `GET /wait0` server-side.
+- `POST /wait0/dashboard/invalidate` bridges to `POST /wait0/invalidate` server-side.
+- `POST /wait0/dashboard/invalidate` applies CSRF checks:
+  - same-origin via `Origin` (or `Referer` fallback),
+  - CSRF token header (`X-Wait0-CSRF`) must match dashboard CSRF cookie.
+- Bridge calls use server-side bearer tokens from `auth.tokens[]`, scoped by:
+  - stats: `stats:read`
+  - invalidation: `invalidation:write`
+- Bearer tokens are never sent to browser code.
+- Dashboard routes are rate-limited per IP (default `120` requests/minute).
+- Dashboard responses disable caching (`Cache-Control: no-store, max-age=0`, `Pragma: no-cache`, `Expires: 0`).
+
+### Token availability behavior
+
+- Missing `stats:read` token: dashboard is disabled (`404`).
+- Missing `invalidation:write` token: dashboard works in stats-only mode; invalidate action returns `503`.
+
+## Example
+
+```bash
+curl -i \
+  -u "${WAIT0_DASHBOARD_USERNAME}:${WAIT0_DASHBOARD_PASSWORD}" \
+  "http://localhost:8082/wait0/dashboard/stats"
+```
+
+## Error responses
+
+| HTTP | Body `error` | Cause |
+|------|--------------|-------|
+| `401` | `unauthorized` | Missing/invalid basic auth credentials |
+| `403` | `csrf origin check failed` | Cross-origin state-changing request |
+| `403` | `csrf token check failed` | Missing/invalid CSRF token for invalidate action |
+| `405` | `method not allowed` | Unsupported method for route |
+| `429` | `rate limit exceeded` | Dashboard per-IP rate limit exceeded |
+| `503` | `dashboard stats are unavailable` | Internal stats bridge unavailable |
+| `503` | `dashboard invalidation is unavailable` | No `invalidation:write` scoped token configured |
+
+## 4) Invalidation API
 
 ## Route
 

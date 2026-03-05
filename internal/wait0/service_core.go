@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"wait0/internal/wait0/auth"
+	"wait0/internal/wait0/dashboard"
 	"wait0/internal/wait0/discovery"
 	"wait0/internal/wait0/invalidation"
 	"wait0/internal/wait0/proxy"
@@ -42,6 +43,7 @@ type Service struct {
 	invAuth *auth.Authenticator
 	inv     *invalidation.Controller
 	stat    *statapi.Controller
+	dash    *dashboard.Controller
 	proxy   *proxy.Controller
 	reval   *revalidation.Controller
 	disco   *discovery.Controller
@@ -57,6 +59,34 @@ func envBool(name string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+func envInt(name string, def int) int {
+	v, ok := os.LookupEnv(name)
+	if !ok || strings.TrimSpace(v) == "" {
+		return def
+	}
+	i, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return def
+	}
+	return i
+}
+
+func envCSV(name string) []string {
+	v, ok := os.LookupEnv(name)
+	if !ok || strings.TrimSpace(v) == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		s := strings.TrimSpace(p)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func NewService(cfg Config) (*Service, error) {
@@ -115,6 +145,7 @@ func NewService(cfg Config) (*Service, error) {
 		&s.wg,
 	)
 	s.stat = statapi.NewController(s.invAuth, newStatsRuntimeAdapter(s))
+	s.configureDashboard()
 	s.reval = revalidation.NewController(
 		newRevalidationRuntimeAdapter(s),
 		s.bgSem,
@@ -189,6 +220,62 @@ func (s *Service) pickRule(path string) *Rule {
 		}
 	}
 	return nil
+}
+
+func (s *Service) configureDashboard() {
+	user := strings.TrimSpace(os.Getenv("WAIT0_DASHBOARD_USERNAME"))
+	pass := strings.TrimSpace(os.Getenv("WAIT0_DASHBOARD_PASSWORD"))
+	if user == "" || pass == "" {
+		log.Printf("dashboard disabled: missing WAIT0_DASHBOARD_USERNAME or WAIT0_DASHBOARD_PASSWORD")
+		return
+	}
+
+	_, statsToken, ok := resolveAuthTokenByScope(s.cfg.Auth.Tokens, statapi.ReadScope)
+	if !ok {
+		log.Printf("dashboard disabled: no auth token with scope %q", statapi.ReadScope)
+		return
+	}
+	_, invToken, invOK := resolveAuthTokenByScope(s.cfg.Auth.Tokens, invalidation.WriteScope)
+
+	s.dash = dashboard.NewController(
+		dashboard.Config{
+			Username:                user,
+			Password:                pass,
+			StatsBearerToken:        statsToken,
+			InvalidationBearerToken: invToken,
+			RateLimitPerMinute:      envInt("WAIT0_DASHBOARD_RATE_LIMIT_RPM", 120),
+			TrustProxyHeaders:       envBool("WAIT0_DASHBOARD_TRUST_PROXY_HEADERS", false),
+			TrustedProxyCIDRs:       envCSV("WAIT0_DASHBOARD_TRUSTED_PROXY_CIDRS"),
+		},
+		dashboard.Runtime{
+			StatsHandler:        http.HandlerFunc(s.stat.Handle),
+			InvalidationHandler: http.HandlerFunc(s.inv.Handle),
+		},
+	)
+	if invOK {
+		log.Printf("dashboard enabled: stats and invalidation routes active")
+		return
+	}
+	log.Printf("dashboard enabled (stats-only): no auth token with scope %q", invalidation.WriteScope)
+}
+
+func resolveAuthTokenByScope(tokens []AuthTokenConfig, scope string) (id, token string, ok bool) {
+	need := strings.TrimSpace(scope)
+	if need == "" {
+		return "", "", false
+	}
+	for _, t := range tokens {
+		for _, s := range t.Scopes {
+			if strings.TrimSpace(s) != need {
+				continue
+			}
+			if strings.TrimSpace(t.Token) == "" {
+				continue
+			}
+			return strings.TrimSpace(t.ID), strings.TrimSpace(t.Token), true
+		}
+	}
+	return "", "", false
 }
 
 func (s *Service) startWarmupGroups() {

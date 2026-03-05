@@ -55,3 +55,31 @@ func TestStartWarmupGroups_StopsOnClose(t *testing.T) {
 	stopTestService(s)
 	s.wg.Wait()
 }
+
+func TestResolveAuthTokenByScope(t *testing.T) {
+	tokens := []AuthTokenConfig{
+		{ID: "read", Token: "tok-read", Scopes: []string{"stats:read"}},
+		{ID: "write", Token: "tok-write", Scopes: []string{"invalidation:write"}},
+		{ID: "both", Token: "tok-both", Scopes: []string{"stats:read", "invalidation:write"}},
+	}
+
+	id, tok, ok := resolveAuthTokenByScope(tokens, "stats:read")
+	if !ok {
+		t.Fatal("expected stats scope token")
+	}
+	if id != "read" || tok != "tok-read" {
+		t.Fatalf("got id=%q tok=%q", id, tok)
+	}
+
+	id, tok, ok = resolveAuthTokenByScope(tokens, "invalidation:write")
+	if !ok {
+		t.Fatal("expected invalidation scope token")
+	}
+	if id != "write" || tok != "tok-write" {
+		t.Fatalf("got id=%q tok=%q", id, tok)
+	}
+
+	if _, _, ok := resolveAuthTokenByScope(tokens, "unknown:scope"); ok {
+		t.Fatal("did not expect token for unknown scope")
+	}
+}

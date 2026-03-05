@@ -10,6 +10,9 @@ services:
       - origin
     ports:
       - "8082:8082"
+    environment:
+      WAIT0_DASHBOARD_USERNAME: admin
+      WAIT0_DASHBOARD_PASSWORD: admin
     volumes:
       - ./wait0.yaml:/wait0.yaml:ro
       - wait0-data:/data

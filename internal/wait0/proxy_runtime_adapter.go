@@ -3,6 +3,7 @@ package wait0
 import (
 	"net/http"
 
+	"wait0/internal/wait0/dashboard"
 	"wait0/internal/wait0/invalidation"
 	"wait0/internal/wait0/proxy"
 	"wait0/internal/wait0/statapi"
@@ -38,6 +39,13 @@ func (a *proxyRuntimeAdapter) HandleControl(w http.ResponseWriter, r *http.Reque
 			http.NotFound(w, r)
 		} else {
 			a.s.stat.Handle(w, r)
+		}
+		return true
+	case dashboard.EndpointPath, dashboard.EndpointPath + "/", dashboard.StatsEndpointPath, dashboard.InvalidateEndpointPath:
+		if a.s.dash == nil {
+			http.NotFound(w, r)
+		} else {
+			a.s.dash.Handle(w, r)
 		}
 		return true
 	default:

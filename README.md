@@ -14,6 +14,7 @@ It is designed for Next.js/Nuxt.js and other dynamic origins where latency and o
 - Built for dynamic pages, not static asset caching
 - RAM + LevelDB cache tiers for low latency and persistence
 - Async invalidation API with bearer auth and tag support
+- Built-in Basic-Auth dashboard for stats, charts, and invalidation
 - Warmup and sitemap discovery to reduce cold-start misses
 - Explicit response marker `X-Wait0` (`hit`, `miss`, `bypass`, etc.)
 
@@ -94,6 +95,28 @@ curl -i \
 
 Returns `200 OK` with cache/memory/refresh/sitemap metrics snapshot.
 Authorization is scope-based (`stats:read`).
+
+## Dashboard Example
+
+Set dashboard credentials in environment:
+
+```bash
+export WAIT0_DASHBOARD_USERNAME='ops'
+export WAIT0_DASHBOARD_PASSWORD='change-me'
+```
+
+Open:
+
+```text
+http://localhost:8082/wait0/dashboard
+```
+
+Notes:
+
+- The dashboard is Basic-Auth protected and disabled when either env variable is missing.
+- The dashboard reads stats and triggers invalidation through server-side bridge handlers.
+- Bearer tokens are not exposed to browser JavaScript.
+- Dashboard invalidation is CSRF-protected (same-origin + token check) and dashboard routes are rate-limited per IP.
 
 ## Documentation
 

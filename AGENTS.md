@@ -26,6 +26,7 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 │       ├── *_runtime_adapter.go   # Root adapters that inject Service deps into modules
 │       ├── auth/                  # Shared bearer authentication
 │       ├── invalidation/          # /wait0/invalidate API + async workers
+│       ├── dashboard/             # /wait0/dashboard HTML + stats/invalidation bridge handlers
 │       ├── proxy/                 # Request handling/origin fetch/response headers
 │       ├── revalidation/          # Revalidate and warmup orchestration
 │       ├── discovery/             # Sitemap discovery and URL normalization
@@ -48,6 +49,7 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 |------|---------|
 | cmd/wait0/main.go | Bootstraps config/service, starts HTTP server, handles graceful shutdown |
 | internal/wait0/service_core.go | Root composition: constructs module controllers and adapters |
+| internal/wait0/dashboard/controller.go | Dashboard HTTP controller (Basic Auth + bridge endpoints + HTML shell) |
 | internal/wait0/proxy/controller.go | Main request handling path and cache hit/miss/bypass flow |
 | internal/wait0/revalidation/controller.go | Async revalidation and warmup orchestration |
 | internal/wait0/cache_ram.go / cache_disk.go | Root cache facades wrapping `internal/wait0/cache` |

@@ -61,6 +61,11 @@ Coverage threshold default: `80%` (`COVERAGE_THRESHOLD` in `Makefile`).
 | `WAIT0_CONFIG` | `/wait0.yaml` | Default value for `-config` |
 | `WAIT0_INVALIDATE_DISK_CACHE_ON_START` | `true` | If `true`, LevelDB cache directory is cleared on process start |
 | `WAIT0_SEND_REVALIDATE_MARKERS` | `true` | Controls sending revalidation marker headers during background revalidation |
+| `WAIT0_DASHBOARD_USERNAME` | unset | Basic Auth username for `GET /wait0/dashboard` and dashboard API routes |
+| `WAIT0_DASHBOARD_PASSWORD` | unset | Basic Auth password for `GET /wait0/dashboard` and dashboard API routes |
+| `WAIT0_DASHBOARD_RATE_LIMIT_RPM` | `120` | Per-IP fixed-window rate limit for `/wait0/dashboard*` routes |
+| `WAIT0_DASHBOARD_TRUST_PROXY_HEADERS` | `false` | If `true`, dashboard rate limiter client IP extraction trusts `X-Forwarded-For` (first hop) |
+| `WAIT0_DASHBOARD_TRUSTED_PROXY_CIDRS` | unset | Comma-separated CIDRs of trusted proxy source IPs allowed to supply `X-Forwarded-For` |
 
 ## Configuration Reference (`wait0.yaml`)
 
@@ -105,6 +110,15 @@ Validation rules: all numeric values above must be `> 0`.
 For invalidation API, at least one token must have scope `invalidation:write` when invalidation is enabled.
 
 For stats API (`GET /wait0`), tokens need scope `stats:read`.
+
+For dashboard:
+
+- `stats:read` token is required to enable dashboard routes.
+- `invalidation:write` token is optional; without it, dashboard is stats-only and invalidate action is disabled.
+- Built-in dashboard rate limiting exists (`WAIT0_DASHBOARD_RATE_LIMIT_RPM`), but for internet-exposed deployments reverse-proxy/WAF rate limiting is still mandatory.
+- Pre-auth rate-limit key is `client IP` only.
+- Post-auth rate-limit key is `(client IP, verified auth principal)`.
+- With trusted proxies enabled, `client IP` uses `X-Forwarded-For` first hop only when `RemoteAddr` belongs to `WAIT0_DASHBOARD_TRUSTED_PROXY_CIDRS`.
 
 ## `rules[]`
 

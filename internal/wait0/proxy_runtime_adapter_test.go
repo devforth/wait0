@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"wait0/internal/wait0/auth"
+	"wait0/internal/wait0/dashboard"
 	"wait0/internal/wait0/invalidation"
 	"wait0/internal/wait0/proxy"
 	"wait0/internal/wait0/statapi"
@@ -41,6 +42,15 @@ func TestProxyRuntimeAdapter_HandleControlAndRule(t *testing.T) {
 	}
 	if w.Result().StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 for missing stats controller", w.Result().StatusCode)
+	}
+
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodGet, "http://wait0.local"+dashboard.EndpointPath, nil)
+	if got := a.HandleControl(w, r); !got {
+		t.Fatalf("expected true for dashboard endpoint")
+	}
+	if w.Result().StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for missing dashboard controller", w.Result().StatusCode)
 	}
 
 	rule := a.PickRule("/api/x")
