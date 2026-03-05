@@ -50,6 +50,10 @@ func (c *ramCache) SnapshotAccessTimes() map[string]int64 {
 	return c.inner.SnapshotAccessTimes()
 }
 
+func (c *ramCache) MetaSnapshot() map[string]cache.EntryMeta {
+	return c.inner.MetaSnapshot()
+}
+
 func (c *ramCache) setLastAccessForTest(key string, ts int64) bool {
 	return c.inner.SetLastAccessForTest(key, ts)
 }

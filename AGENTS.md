@@ -63,6 +63,11 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 | API Endpoints | docs/api-endpoints.md | Endpoint and response reference |
 | Docker Hub notes | DOCKERHUB.md | Alias to README for Docker Hub presentation |
 
+## AI Context Files
+| File | Description |
+|------|-------------|
+| .ai-factory/ARCHITECTURE.md | Architecture decisions and guidelines |
+
 ## Build & Development Commands
 This project uses a `Makefile` for build automation.
 

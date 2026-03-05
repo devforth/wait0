@@ -14,6 +14,7 @@ import (
 	"wait0/internal/wait0/invalidation"
 	"wait0/internal/wait0/proxy"
 	"wait0/internal/wait0/revalidation"
+	"wait0/internal/wait0/statapi"
 	wstats "wait0/internal/wait0/stats"
 )
 
@@ -40,6 +41,7 @@ type Service struct {
 
 	invAuth *auth.Authenticator
 	inv     *invalidation.Controller
+	stat    *statapi.Controller
 	proxy   *proxy.Controller
 	reval   *revalidation.Controller
 	disco   *discovery.Controller
@@ -85,6 +87,7 @@ func NewService(cfg Config) (*Service, error) {
 		unchangedLog:          wstats.NewRateLimitedLogger(10 * time.Second),
 		errorLog:              wstats.NewRateLimitedLogger(10 * time.Second),
 		sendRevalidateMarkers: envBool("WAIT0_SEND_REVALIDATE_MARKERS", true),
+		stats:                 wstats.NewCollector(),
 	}
 
 	authCfgs := make([]auth.TokenConfig, 0, len(cfg.Auth.Tokens))
@@ -111,6 +114,7 @@ func NewService(cfg Config) (*Service, error) {
 		s.stopCh,
 		&s.wg,
 	)
+	s.stat = statapi.NewController(s.invAuth, newStatsRuntimeAdapter(s))
 	s.reval = revalidation.NewController(
 		newRevalidationRuntimeAdapter(s),
 		s.bgSem,
@@ -121,6 +125,7 @@ func NewService(cfg Config) (*Service, error) {
 		s.unchangedLog,
 		s.errorLog,
 	)
+	s.reval.SetDurationObserver(s.stats.ObserveRefreshDuration)
 	s.proxy = proxy.NewController(newProxyRuntimeAdapter(s))
 	s.disco = discovery.NewController(
 		discovery.Config{
@@ -140,7 +145,6 @@ func NewService(cfg Config) (*Service, error) {
 	}
 
 	if cfg.Logging.logStatsEveryDur > 0 {
-		s.stats = wstats.NewCollector()
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()

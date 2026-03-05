@@ -10,8 +10,8 @@ import (
 )
 
 type fakeRuntime struct {
-	handleInvalidation bool
-	rule               *Rule
+	handleControl bool
+	rule          *Rule
 
 	ramEnt Entry
 	ramOK  bool
@@ -31,8 +31,8 @@ type fakeRuntime struct {
 	writeWait0  []string
 }
 
-func (f *fakeRuntime) HandleInvalidation(http.ResponseWriter, *http.Request) bool {
-	return f.handleInvalidation
+func (f *fakeRuntime) HandleControl(http.ResponseWriter, *http.Request) bool {
+	return f.handleControl
 }
 
 func (f *fakeRuntime) PickRule(string) *Rule { return f.rule }
@@ -63,8 +63,8 @@ func (f *fakeRuntime) WriteEntryWithStats(w http.ResponseWriter, ent Entry, wait
 	WriteEntry(w, ent, wait0)
 }
 
-func TestController_Handle_ShortCircuitsInvalidation(t *testing.T) {
-	rt := &fakeRuntime{handleInvalidation: true}
+func TestController_Handle_ShortCircuitsControl(t *testing.T) {
+	rt := &fakeRuntime{handleControl: true}
 	c := NewController(rt)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "http://wait0.local/page", nil)
@@ -110,7 +110,7 @@ func TestController_Handle_BypassPaths(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rt := &fakeRuntime{
-				rule: tc.rule,
+				rule:      tc.rule,
 				originEnt: Entry{Status: http.StatusAccepted, Header: http.Header{}, Body: []byte("ok")},
 			}
 			c := NewController(rt)
@@ -131,7 +131,7 @@ func TestController_Handle_BypassPaths(t *testing.T) {
 func TestController_Handle_RAMHitAndStaleRevalidation(t *testing.T) {
 	ent := Entry{Status: http.StatusOK, Header: http.Header{}, Body: []byte("cached"), StoredAt: time.Now().Add(-2 * time.Minute).Unix()}
 	rt := &fakeRuntime{
-		rule:  &Rule{Expiration: time.Second},
+		rule:   &Rule{Expiration: time.Second},
 		ramEnt: ent,
 		ramOK:  true,
 	}
@@ -219,7 +219,7 @@ func TestController_Handle_OriginBranches(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rt := &fakeRuntime{
-				originEnt: Entry{Status: http.StatusCreated, Header: http.Header{}, Body: []byte("origin")},
+				originEnt:       Entry{Status: http.StatusCreated, Header: http.Header{}, Body: []byte("origin")},
 				originCacheable: tc.cacheable,
 				originStatus:    tc.statusKind,
 				originErr:       tc.err,

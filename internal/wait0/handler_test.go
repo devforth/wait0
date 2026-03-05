@@ -7,7 +7,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"wait0/internal/wait0/auth"
 	"wait0/internal/wait0/proxy"
+	"wait0/internal/wait0/statapi"
 )
 
 func TestHandle_CacheMissThenHit(t *testing.T) {
@@ -97,5 +99,21 @@ func TestHasAnyCookie(t *testing.T) {
 	}
 	if proxy.HasAnyCookie(req, []string{"other"}) {
 		t.Fatalf("did not expect cookie match")
+	}
+}
+
+func TestHandle_StatsEndpoint(t *testing.T) {
+	s := newTestService(t, "http://example.com", nil)
+	s.invAuth = auth.NewAuthenticator([]auth.TokenConfig{{ID: "stats", Token: "secret", Scopes: []string{statapi.ReadScope}}})
+	s.stat = statapi.NewController(s.invAuth, newStatsRuntimeAdapter(s))
+	s.ram.Put("/page", CacheEntry{Status: 200, Header: http.Header{"X-Test": {"v"}}, Body: []byte("ok"), StoredAt: 1}, s.disk, s.overflowLog)
+
+	req := httptest.NewRequest(http.MethodGet, "http://wait0.local/wait0", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Result().StatusCode)
 	}
 }

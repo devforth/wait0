@@ -10,6 +10,7 @@ Complete HTTP endpoint reference for `wait0`.
 
 - A reverse-proxy data path for regular client requests.
 - A control endpoint for asynchronous cache invalidation.
+- A control endpoint for read-only runtime/cache statistics.
 
 Base URL examples:
 
@@ -62,7 +63,101 @@ curl -i "http://localhost:8082/"
 Typical first request: `X-Wait0: miss`.
 Subsequent request: `X-Wait0: hit`.
 
-## 2) Invalidation API
+## 2) Stats API
+
+## Route
+
+- `GET /wait0`
+- `GET /wait0/`
+
+## Auth
+
+- `Authorization: Bearer <token>` required.
+- Token must map to scope: `stats:read`.
+
+## Behavior
+
+- Returns a cached metrics snapshot (recomputed at most once every 5 seconds).
+- Designed for dashboard/backoffice polling with bounded server overhead.
+- `refresh_duration_ms` is calculated from observed revalidation execution durations (min/avg/max), not cache entry age.
+- Duration aggregates are process-lifetime metrics (since current process start).
+
+## Successful response
+
+Status: `200 OK`
+
+```json
+{
+  "generated_at": "2026-03-05T10:00:00Z",
+  "snapshot_ttl_seconds": 5,
+  "cache": {
+    "urls_total": 123,
+    "responses_size_bytes_total": 456789,
+    "response_size_bytes": {
+      "min": 128,
+      "avg": 1024,
+      "max": 4096
+    }
+  },
+  "memory": {
+    "rss_bytes": 12345678,
+    "go_alloc_bytes": 2345678
+  },
+  "refresh_duration_ms": {
+    "min": 19,
+    "avg": 66,
+    "max": 119
+  },
+  "sitemap": {
+    "discovered_urls": 80,
+    "crawled_urls": 60,
+    "crawl_percentage": 75
+  }
+}
+```
+
+## Response field reference
+
+The table below explains each field in the stats payload, including what it means and how it is computed.
+
+| Field | Type | Meaning | Calculation | Update behavior / notes |
+|------|------|---------|-------------|-------------------------|
+| `generated_at` | RFC3339Nano string | UTC timestamp when this snapshot was generated. | `time.Now().UTC()` at snapshot build time. | New value only when snapshot is recomputed. |
+| `snapshot_ttl_seconds` | integer | Snapshot cache TTL used by `/wait0`. | Fixed constant `5`. | Endpoint may return identical payload for calls within this TTL. |
+| `cache.urls_total` | integer | Total number of unique cached keys currently known to wait0. Includes active + inactive entries. | Unique union of RAM keys and disk keys. | Recomputed per snapshot. |
+| `cache.responses_size_bytes_total` | integer (bytes) | Total logical size of cached responses for all unique keys. | Sum over unique keys of per-entry logical size (`headers + body` bytes). | Recomputed per snapshot. |
+| `cache.response_size_bytes.min` | integer (bytes) | Smallest logical response size among unique cached keys. | Min of per-key logical response size. | Recomputed per snapshot; `0` when no keys. |
+| `cache.response_size_bytes.avg` | integer (bytes) | Average logical response size among unique cached keys. | `responses_size_bytes_total / urls_total` (integer division). | Recomputed per snapshot; `0` when no keys. |
+| `cache.response_size_bytes.max` | integer (bytes) | Largest logical response size among unique cached keys. | Max of per-key logical response size. | Recomputed per snapshot; `0` when no keys. |
+| `memory.rss_bytes` | integer (bytes) | Current process resident memory (RSS) as seen by OS probes. | `ProcessRSSBytes()`; `0` when unavailable on platform/runtime. | Recomputed per snapshot. |
+| `memory.go_alloc_bytes` | integer (bytes) | Current heap bytes allocated by Go runtime. | `runtime.ReadMemStats(&ms); ms.Alloc`. | Recomputed per snapshot. |
+| `refresh_duration_ms.min` | integer (ms) | Fastest observed revalidation execution time. | Min of observed `revalidation.Once(...)` durations, converted to milliseconds. | Process-lifetime aggregate since current process start. |
+| `refresh_duration_ms.avg` | integer (ms) | Average observed revalidation execution time. | Sum of all observed revalidation durations / count, converted to ms (integer division). | Process-lifetime aggregate since current process start. |
+| `refresh_duration_ms.max` | integer (ms) | Slowest observed revalidation execution time. | Max of observed `revalidation.Once(...)` durations, converted to milliseconds. | Process-lifetime aggregate since current process start. |
+| `sitemap.discovered_urls` | integer | Number of unique cached keys whose discovery source is sitemap. | Count of unique keys where `discovered_by == "sitemap"` (case-insensitive). | Recomputed per snapshot. |
+| `sitemap.crawled_urls` | integer | Number of sitemap-discovered keys that are currently active (not inactive seed entries). | Count of sitemap keys where `inactive == false`. | Recomputed per snapshot. |
+| `sitemap.crawl_percentage` | float | Share of sitemap-discovered keys currently crawled/active. | `crawled_urls * 100 / discovered_urls`; `0` if `discovered_urls == 0`. | Recomputed per snapshot. |
+
+### Additional interpretation notes
+
+- Snapshot caching: `/wait0` returns cached stats for up to `snapshot_ttl_seconds`; polling faster than TTL will often return unchanged values.
+- Lifetime vs point-in-time:
+  - `refresh_duration_ms.*` is lifetime cumulative for this process (does not reset per warmup batch).
+  - `cache.*`, `memory.*`, `sitemap.*` are point-in-time values at snapshot generation.
+- Duplicate keys across RAM and disk are deduplicated as one logical cached URL in all `cache.*` and `sitemap.*` counts.
+- Size units:
+  - `*_bytes` fields are raw bytes.
+  - `refresh_duration_ms` is milliseconds.
+
+## Error responses
+
+| HTTP | Body `error` | Cause |
+|------|--------------|-------|
+| `401` | `unauthorized` | Missing/invalid bearer token |
+| `403` | `forbidden` | Token exists but lacks `stats:read` scope |
+| `405` | `method not allowed` | Non-GET request |
+
+## 3) Invalidation API
 
 ## Route
 

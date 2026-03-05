@@ -1,34 +1,46 @@
 package wait0
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"wait0/internal/wait0/auth"
 	"wait0/internal/wait0/invalidation"
 	"wait0/internal/wait0/proxy"
+	"wait0/internal/wait0/statapi"
 	wstats "wait0/internal/wait0/stats"
 )
 
-func TestProxyRuntimeAdapter_HandleInvalidationAndRule(t *testing.T) {
+func TestProxyRuntimeAdapter_HandleControlAndRule(t *testing.T) {
 	s := newTestService(t, "http://example.com", []Rule{mustRule(t, "PathPrefix(/api)")})
 	a := newProxyRuntimeAdapter(s)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "http://wait0.local/other", nil)
-	if got := a.HandleInvalidation(w, r); got {
+	if got := a.HandleControl(w, r); got {
 		t.Fatalf("expected false for non-invalidation path")
 	}
 
 	s.inv = nil
 	w = httptest.NewRecorder()
 	r = httptest.NewRequest(http.MethodGet, "http://wait0.local"+invalidation.EndpointPath, nil)
-	if got := a.HandleInvalidation(w, r); !got {
+	if got := a.HandleControl(w, r); !got {
 		t.Fatalf("expected true for invalidation endpoint")
 	}
 	if w.Result().StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", w.Result().StatusCode)
+	}
+
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodGet, "http://wait0.local"+statapi.EndpointPath, nil)
+	if got := a.HandleControl(w, r); !got {
+		t.Fatalf("expected true for stats endpoint")
+	}
+	if w.Result().StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for missing stats controller", w.Result().StatusCode)
 	}
 
 	rule := a.PickRule("/api/x")
@@ -39,6 +51,42 @@ func TestProxyRuntimeAdapter_HandleInvalidationAndRule(t *testing.T) {
 	base := s.pickRule("/api/x")
 	if len(base.BypassWhenCookies) != 0 {
 		t.Fatalf("rule cookie list should be copied")
+	}
+}
+
+func TestProxyRuntimeAdapter_HandleControl_StatsEndpointWithAuth(t *testing.T) {
+	s := newTestService(t, "http://example.com", nil)
+	s.invAuth = auth.NewAuthenticator([]auth.TokenConfig{{ID: "stats", Token: "secret", Scopes: []string{statapi.ReadScope}}})
+	s.stat = statapi.NewController(s.invAuth, newStatsRuntimeAdapter(s))
+	a := newProxyRuntimeAdapter(s)
+
+	s.ram.Put("/a", CacheEntry{
+		Status:        http.StatusOK,
+		Header:        http.Header{"X-Test": {"1"}},
+		Body:          []byte("body"),
+		StoredAt:      time.Now().Add(-10 * time.Second).Unix(),
+		RevalidatedAt: time.Now().Add(-5 * time.Second).UnixNano(),
+	}, s.disk, s.overflowLog)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "http://wait0.local"+statapi.EndpointPath+"/", nil)
+	r.Header.Set("Authorization", "Bearer secret")
+	if got := a.HandleControl(w, r); !got {
+		t.Fatalf("expected true for stats endpoint")
+	}
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Result().StatusCode)
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(w.Result().Body).Decode(&payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	cacheObj, ok := payload["cache"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing cache object in payload")
+	}
+	if cacheObj["urls_total"].(float64) < 1 {
+		t.Fatalf("urls_total = %v", cacheObj["urls_total"])
 	}
 }
 

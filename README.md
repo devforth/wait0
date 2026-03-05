@@ -84,6 +84,17 @@ curl -i \
 Returns `202 Accepted` and processes invalidation asynchronously.
 Authorization is scope-based (`invalidation:write`) to support least-privilege tokens and future API growth without changing token model.
 
+## Stats API Example
+
+```bash
+curl -i \
+  "http://localhost:8082/wait0" \
+  -H "Authorization: Bearer ${WAIT0_STATS_TOKEN}"
+```
+
+Returns `200 OK` with cache/memory/refresh/sitemap metrics snapshot.
+Authorization is scope-based (`stats:read`).
+
 ## Documentation
 
 | Guide | Description |

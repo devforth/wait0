@@ -39,6 +39,8 @@ type Controller struct {
 	summaryLog   Logger
 	unchangedLog Logger
 	errorLog     Logger
+
+	observeDuration func(time.Duration)
 }
 
 func NewController(rt Runtime, bgSem chan struct{}, stopCh <-chan struct{}, wg *sync.WaitGroup, logWarmUp bool, summaryLog Logger, unchangedLog Logger, errorLog Logger) *Controller {
@@ -52,6 +54,10 @@ func NewController(rt Runtime, bgSem chan struct{}, stopCh <-chan struct{}, wg *
 		unchangedLog: unchangedLog,
 		errorLog:     errorLog,
 	}
+}
+
+func (c *Controller) SetDurationObserver(fn func(time.Duration)) {
+	c.observeDuration = fn
 }
 
 func (c *Controller) Async(key, path, query, by string) {
@@ -73,6 +79,11 @@ func (c *Controller) Async(key, path, query, by string) {
 
 func (c *Controller) Once(ctx context.Context, key, path, query, by string) Result {
 	start := time.Now()
+	defer func() {
+		if c.observeDuration != nil {
+			c.observeDuration(time.Since(start))
+		}
+	}()
 	cur, hasCur := c.rt.Peek(key)
 
 	discoveredBy := "user"

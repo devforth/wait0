@@ -13,6 +13,7 @@ type ramItem struct {
 	key        string
 	ent        Entry
 	size       int64
+	statsSize  int64
 	lastAccess int64
 	prev       *ramItem
 	next       *ramItem
@@ -91,6 +92,7 @@ func (c *RAM) Put(key string, ent Entry, disk *Disk, overflowLog Logger) {
 		return
 	}
 	sz := int64(len(b))
+	statsSize := EntryLogicalSize(ent)
 
 	if c.maxBytes > 0 && sz > c.maxBytes {
 		if disk != nil {
@@ -107,6 +109,7 @@ func (c *RAM) Put(key string, ent Entry, disk *Disk, overflowLog Logger) {
 		c.total -= it.size
 		it.ent = ent
 		it.size = sz
+		it.statsSize = statsSize
 		it.lastAccess = now
 		c.total += sz
 		c.moveToFront(it)
@@ -126,7 +129,7 @@ func (c *RAM) Put(key string, ent Entry, disk *Disk, overflowLog Logger) {
 		}
 	}
 
-	it := &ramItem{key: key, ent: ent, size: sz, lastAccess: now}
+	it := &ramItem{key: key, ent: ent, size: sz, statsSize: statsSize, lastAccess: now}
 	c.items[key] = it
 	c.addToFront(it)
 	c.total += sz
@@ -138,6 +141,26 @@ func (c *RAM) SnapshotAccessTimes() map[string]int64 {
 	out := make(map[string]int64, len(c.items))
 	for k, it := range c.items {
 		out[k] = it.lastAccess
+	}
+	return out
+}
+
+func (c *RAM) MetaSnapshot() map[string]EntryMeta {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[string]EntryMeta, len(c.items))
+	for k, it := range c.items {
+		lastRefresh := it.ent.RevalidatedAt
+		if lastRefresh <= 0 && it.ent.StoredAt > 0 {
+			lastRefresh = it.ent.StoredAt * int64(time.Second)
+		}
+		out[k] = EntryMeta{
+			Size:                it.statsSize,
+			Inactive:            it.ent.Inactive,
+			DiscoveredBy:        it.ent.DiscoveredBy,
+			LastRefreshUnixNano: lastRefresh,
+			StoredAtUnix:        it.ent.StoredAt,
+		}
 	}
 	return out
 }

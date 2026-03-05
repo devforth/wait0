@@ -104,6 +104,8 @@ Validation rules: all numeric values above must be `> 0`.
 
 For invalidation API, at least one token must have scope `invalidation:write` when invalidation is enabled.
 
+For stats API (`GET /wait0`), tokens need scope `stats:read`.
+
 ## `rules[]`
 
 | Field | Required | Notes |

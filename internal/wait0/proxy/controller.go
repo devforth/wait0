@@ -6,7 +6,7 @@ import (
 )
 
 type Runtime interface {
-	HandleInvalidation(w http.ResponseWriter, r *http.Request) bool
+	HandleControl(w http.ResponseWriter, r *http.Request) bool
 	PickRule(path string) *Rule
 	LoadRAM(key string, now int64) (Entry, bool)
 	LoadDisk(key string) (Entry, bool)
@@ -27,7 +27,7 @@ func NewController(rt Runtime) *Controller {
 }
 
 func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
-	if c.rt.HandleInvalidation(w, r) {
+	if c.rt.HandleControl(w, r) {
 		return
 	}
 

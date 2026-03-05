@@ -1,6 +1,9 @@
 package stats
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestCollectorSnapshot(t *testing.T) {
 	s := NewCollector()
@@ -23,6 +26,27 @@ func TestCollectorSnapshot(t *testing.T) {
 	}
 	if ss.AvgRespBytes != 50 {
 		t.Fatalf("AvgRespBytes = %d", ss.AvgRespBytes)
+	}
+}
+
+func TestCollectorSnapshot_RefreshDurations(t *testing.T) {
+	s := NewCollector()
+	s.ObserveRefreshDuration(19 * time.Millisecond)
+	s.ObserveRefreshDuration(66 * time.Millisecond)
+	s.ObserveRefreshDuration(119 * time.Millisecond)
+
+	ss := s.Snapshot()
+	if ss.RefreshCount != 3 {
+		t.Fatalf("RefreshCount = %d", ss.RefreshCount)
+	}
+	if time.Duration(ss.MinRefreshDurNs) != 19*time.Millisecond {
+		t.Fatalf("MinRefreshDurNs = %d", ss.MinRefreshDurNs)
+	}
+	if time.Duration(ss.MaxRefreshDurNs) != 119*time.Millisecond {
+		t.Fatalf("MaxRefreshDurNs = %d", ss.MaxRefreshDurNs)
+	}
+	if time.Duration(ss.AvgRefreshDurNs) != 68*time.Millisecond {
+		t.Fatalf("AvgRefreshDurNs = %d", ss.AvgRefreshDurNs)
 	}
 }
 

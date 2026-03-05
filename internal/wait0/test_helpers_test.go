@@ -53,6 +53,7 @@ func newTestService(t *testing.T, origin string, rules []Rule) *Service {
 		unchangedLog:          wstats.NewRateLimitedLogger(time.Hour),
 		errorLog:              wstats.NewRateLimitedLogger(time.Hour),
 		sendRevalidateMarkers: true,
+		stats:                 wstats.NewCollector(),
 	}
 	s.reval = revalidation.NewController(
 		newRevalidationRuntimeAdapter(s),
@@ -64,6 +65,7 @@ func newTestService(t *testing.T, origin string, rules []Rule) *Service {
 		s.unchangedLog,
 		s.errorLog,
 	)
+	s.reval.SetDurationObserver(s.stats.ObserveRefreshDuration)
 	s.proxy = proxy.NewController(newProxyRuntimeAdapter(s))
 
 	stopOnceByService.Store(s, &sync.Once{})

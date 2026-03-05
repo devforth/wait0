@@ -5,6 +5,7 @@ import (
 
 	"wait0/internal/wait0/invalidation"
 	"wait0/internal/wait0/proxy"
+	"wait0/internal/wait0/statapi"
 )
 
 type proxyRuntimeAdapter struct {
@@ -23,16 +24,25 @@ func newProxyRuntimeAdapter(s *Service) proxy.Runtime {
 	}
 }
 
-func (a *proxyRuntimeAdapter) HandleInvalidation(w http.ResponseWriter, r *http.Request) bool {
-	if r.URL.Path != invalidation.EndpointPath {
+func (a *proxyRuntimeAdapter) HandleControl(w http.ResponseWriter, r *http.Request) bool {
+	switch r.URL.Path {
+	case invalidation.EndpointPath:
+		if a.s.inv == nil {
+			http.NotFound(w, r)
+		} else {
+			a.s.inv.Handle(w, r)
+		}
+		return true
+	case statapi.EndpointPath, statapi.EndpointPath + "/":
+		if a.s.stat == nil {
+			http.NotFound(w, r)
+		} else {
+			a.s.stat.Handle(w, r)
+		}
+		return true
+	default:
 		return false
 	}
-	if a.s.inv == nil {
-		http.NotFound(w, r)
-	} else {
-		a.s.inv.Handle(w, r)
-	}
-	return true
 }
 
 func (a *proxyRuntimeAdapter) PickRule(path string) *proxy.Rule {

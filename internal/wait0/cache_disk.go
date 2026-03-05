@@ -22,6 +22,10 @@ func (d *diskCache) SnapshotAccessTimes() map[string]int64 {
 	return d.inner.SnapshotAccessTimes()
 }
 
+func (d *diskCache) MetaSnapshot() map[string]cache.EntryMeta {
+	return d.inner.MetaSnapshot()
+}
+
 func (d *diskCache) TotalSize() int64 {
 	return d.inner.TotalSize()
 }

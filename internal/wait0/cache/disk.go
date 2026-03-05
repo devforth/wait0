@@ -13,8 +13,12 @@ import (
 )
 
 type diskMeta struct {
-	Size       int64
-	LastAccess int64
+	Size         int64
+	LastAccess   int64
+	StatsSize    int64
+	Inactive     bool
+	DiscoveredBy string
+	LastRefresh  int64
 }
 
 type diskOp struct {
@@ -71,6 +75,30 @@ func (d *Disk) SnapshotAccessTimes() map[string]int64 {
 	out := make(map[string]int64, len(d.index))
 	for k, m := range d.index {
 		out[k] = m.LastAccess
+	}
+	return out
+}
+
+func (d *Disk) MetaSnapshot() map[string]EntryMeta {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make(map[string]EntryMeta, len(d.index))
+	for k, m := range d.index {
+		lastRefresh := m.LastRefresh
+		if lastRefresh <= 0 {
+			// Backward compatibility for metadata written before LastRefresh existed.
+			lastRefresh = m.LastAccess * int64(time.Second)
+		}
+		size := m.StatsSize
+		if size <= 0 {
+			size = m.Size
+		}
+		out[k] = EntryMeta{
+			Size:                size,
+			Inactive:            m.Inactive,
+			DiscoveredBy:        m.DiscoveredBy,
+			LastRefreshUnixNano: lastRefresh,
+		}
 	}
 	return out
 }
@@ -207,6 +235,11 @@ func (d *Disk) applyPutOrTouch(key string, ent *Entry) {
 			return
 		}
 		size := int64(len(b))
+		statsSize := EntryLogicalSize(*ent)
+		lastRefresh := ent.RevalidatedAt
+		if lastRefresh <= 0 && ent.StoredAt > 0 {
+			lastRefresh = ent.StoredAt * int64(time.Second)
+		}
 
 		d.mu.Lock()
 		old := d.index[key]
@@ -215,6 +248,10 @@ func (d *Disk) applyPutOrTouch(key string, ent *Entry) {
 		}
 		meta.Size = size
 		meta.LastAccess = now
+		meta.StatsSize = statsSize
+		meta.Inactive = ent.Inactive
+		meta.DiscoveredBy = ent.DiscoveredBy
+		meta.LastRefresh = lastRefresh
 		d.index[key] = meta
 		d.totalSize += size
 		total := d.totalSize

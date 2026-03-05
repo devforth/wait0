@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 type Collector struct {
@@ -12,11 +13,17 @@ type Collector struct {
 	totalRespBytes atomic.Uint64
 	minRespBytes   atomic.Uint64
 	maxRespBytes   atomic.Uint64
+
+	totalRefreshDurNs atomic.Uint64
+	refreshCount      atomic.Uint64
+	minRefreshDurNs   atomic.Uint64
+	maxRefreshDurNs   atomic.Uint64
 }
 
 func NewCollector() *Collector {
 	s := &Collector{}
 	s.minRespBytes.Store(math.MaxUint64)
+	s.minRefreshDurNs.Store(math.MaxUint64)
 	return s
 }
 
@@ -49,12 +56,46 @@ func (s *Collector) Observe(respBytes int) {
 	}
 }
 
+func (s *Collector) ObserveRefreshDuration(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	n := uint64(d)
+	s.refreshCount.Add(1)
+	s.totalRefreshDurNs.Add(n)
+
+	for {
+		cur := s.minRefreshDurNs.Load()
+		if n >= cur {
+			break
+		}
+		if s.minRefreshDurNs.CompareAndSwap(cur, n) {
+			break
+		}
+	}
+	for {
+		cur := s.maxRefreshDurNs.Load()
+		if n <= cur {
+			break
+		}
+		if s.maxRefreshDurNs.CompareAndSwap(cur, n) {
+			break
+		}
+	}
+}
+
 type Snapshot struct {
 	TotalResponses uint64
 	TotalRespBytes uint64
 	MinRespBytes   uint64
 	MaxRespBytes   uint64
 	AvgRespBytes   uint64
+
+	RefreshCount      uint64
+	TotalRefreshDurNs uint64
+	MinRefreshDurNs   uint64
+	MaxRefreshDurNs   uint64
+	AvgRefreshDurNs   uint64
 }
 
 func (s *Collector) Snapshot() Snapshot {
@@ -62,19 +103,45 @@ func (s *Collector) Snapshot() Snapshot {
 	total := s.totalRespBytes.Load()
 	minv := s.minRespBytes.Load()
 	maxv := s.maxRespBytes.Load()
+	refreshCount := s.refreshCount.Load()
+	totalRefresh := s.totalRefreshDurNs.Load()
+	minRefresh := s.minRefreshDurNs.Load()
+	maxRefresh := s.maxRefreshDurNs.Load()
+	if minRefresh == math.MaxUint64 {
+		minRefresh = 0
+	}
+
 	if count == 0 {
-		return Snapshot{}
+		return Snapshot{
+			RefreshCount:      refreshCount,
+			TotalRefreshDurNs: totalRefresh,
+			MinRefreshDurNs:   minRefresh,
+			MaxRefreshDurNs:   maxRefresh,
+			AvgRefreshDurNs:   avgDiv(totalRefresh, refreshCount),
+		}
 	}
 	if minv == math.MaxUint64 {
 		minv = 0
 	}
 	return Snapshot{
-		TotalResponses: count,
-		TotalRespBytes: total,
-		MinRespBytes:   minv,
-		MaxRespBytes:   maxv,
-		AvgRespBytes:   total / count,
+		TotalResponses:    count,
+		TotalRespBytes:    total,
+		MinRespBytes:      minv,
+		MaxRespBytes:      maxv,
+		AvgRespBytes:      total / count,
+		RefreshCount:      refreshCount,
+		TotalRefreshDurNs: totalRefresh,
+		MinRefreshDurNs:   minRefresh,
+		MaxRefreshDurNs:   maxRefresh,
+		AvgRefreshDurNs:   avgDiv(totalRefresh, refreshCount),
 	}
+}
+
+func avgDiv(total uint64, count uint64) uint64 {
+	if count == 0 {
+		return 0
+	}
+	return total / count
 }
 
 func FormatBytes(b uint64) string {
