@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"wait0/internal/wait0/invalidation"
+	"wait0/internal/wait0/proxy"
 
 	"gopkg.in/yaml.v3"
 )
@@ -103,6 +104,7 @@ type Rule struct {
 	Priority          int           `yaml:"priority"`
 	Bypass            bool          `yaml:"bypass"`
 	BypassWhenCookies []string      `yaml:"bypassWhenCookies"`
+	VaryByQueryParams []string      `yaml:"varyByQueryParams"`
 	Expiration        string        `yaml:"expiration"`
 	WarmUp            *WarmUpConfig `yaml:"warmUp"`
 
@@ -203,6 +205,13 @@ func LoadConfig(path string) (Config, error) {
 			return Config{}, fmt.Errorf("rules[%d].match: %w", i, err)
 		}
 		r.matchers = ms
+		if len(r.VaryByQueryParams) > 0 {
+			params, err := proxy.NormalizeVaryByQueryParams(r.VaryByQueryParams)
+			if err != nil {
+				return Config{}, fmt.Errorf("rules[%d].varyByQueryParams: %w", i, err)
+			}
+			r.VaryByQueryParams = params
+		}
 		if r.Expiration != "" {
 			d, err := time.ParseDuration(r.Expiration)
 			if err != nil {

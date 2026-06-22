@@ -148,7 +148,47 @@ func TestController_Handle_RAMHitAndStaleRevalidation(t *testing.T) {
 		t.Fatalf("revalidate calls = %d, want 1", len(rt.revalidated))
 	}
 	call := rt.revalidated[0]
-	if call.key != "/path" || call.path != "/path" || call.query != "q=1" {
+	if call.key != "/path" || call.path != "/path" || call.query != "" {
+		t.Fatalf("revalidate call = %+v", call)
+	}
+}
+
+func TestController_Handle_QueryAwareCacheKeys(t *testing.T) {
+	rt := &fakeRuntime{
+		rule:            &Rule{VaryByQueryParams: []string{"page"}},
+		originEnt:       Entry{Status: http.StatusCreated, Header: http.Header{}, Body: []byte("origin")},
+		originCacheable: true,
+		originStatus:    "ok",
+	}
+	c := NewController(rt)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "http://wait0.local/path?page=1&rand=2", nil)
+
+	c.Handle(w, r)
+
+	if len(rt.stored) != 1 || rt.stored[0] != "/path?page=1" {
+		t.Fatalf("stored = %v, want [/path?page=1]", rt.stored)
+	}
+}
+
+func TestController_Handle_QueryAwareRevalidationUsesCanonicalQuery(t *testing.T) {
+	ent := Entry{Status: http.StatusOK, Header: http.Header{}, Body: []byte("cached"), StoredAt: time.Now().Add(-2 * time.Minute).Unix()}
+	rt := &fakeRuntime{
+		rule:   &Rule{Expiration: time.Second, VaryByQueryParams: []string{"page"}},
+		ramEnt: ent,
+		ramOK:  true,
+	}
+	c := NewController(rt)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "http://wait0.local/path?page=1&rand=2", nil)
+
+	c.Handle(w, r)
+
+	if len(rt.revalidated) != 1 {
+		t.Fatalf("revalidate calls = %d, want 1", len(rt.revalidated))
+	}
+	call := rt.revalidated[0]
+	if call.key != "/path?page=1" || call.path != "/path" || call.query != "page=1" {
 		t.Fatalf("revalidate call = %+v", call)
 	}
 }

@@ -37,6 +37,11 @@ rules:
   - match: PathPrefix(/)
     priority: 1
     expiration: '1m'
+
+  - match: PathPrefix(/blog)
+    priority: 2
+    varyByQueryParams: ['page']
+    expiration: '1m'
 ```
 
 2. Run `wait0` via Docker:
@@ -85,6 +90,8 @@ curl -i \
 Returns `202 Accepted` and processes invalidation asynchronously.
 Authorization is scope-based (`invalidation:write`) to support least-privilege tokens and future API growth without changing token model.
 
+When you invalidate a path such as `/blog`, wait0 removes and recrawls all cached variants for that path, including query-aware keys like `/blog?page` and `/blog?page=2`.
+
 ## Stats API Example
 
 ```bash
@@ -125,9 +132,30 @@ Notes:
 | [For Developers](docs/for-developers.md) | Build/test commands, config reference, runtime options |
 | [API Endpoints](docs/api-endpoints.md) | Proxy behavior, invalidation API, schemas, status codes |
 
+## Query-Aware Cache Keys
+
+Use `varyByQueryParams` on a rule when only a small set of query parameters should affect cache identity.
+
+Example:
+
+```yaml
+rules:
+  - match: PathPrefix(/blog)
+    priority: 1
+    varyByQueryParams: ['page']
+    expiration: '1m'
+```
+
+With that rule:
+
+- `/blog` and `/blog?utm_source=newsletter` use the same cache entry because `utm_source` is ignored.
+- `/blog?page` uses a different cache entry from `/blog`.
+- `/blog?page=1` uses a different cache entry from both `/blog` and `/blog?page`.
+- If multiple values are present for an allowed parameter, wait0 canonicalizes them into a stable key order.
+
 ## Redeploy Note
 
-SSR frameworks like Next.js/Nuxt usually output versioned static asset names (for example, `app.abc123.js`).
+SSR frameworks like Next.js/Nuxt/Sveltekit usually output versioned static asset names (for example, `app.abc123.js`).
 After a redeploy, HTML references switch to new filenames (for example, `app.def456.js`), and old files are commonly removed.
 
 If stale HTML is still cached, clients can receive pages that point to missing assets. Typical symptoms are broken UI, hydration failures, and partial renders.
@@ -135,14 +163,18 @@ If stale HTML is still cached, clients can receive pages that point to missing a
 To reduce this risk, `wait0` clears disk cache on startup by default (`WAIT0_INVALIDATE_DISK_CACHE_ON_START=true`).
 That behavior makes rollout safer because old HTML is not reused across deploy generations.
 
+Hpowever, during redeploy you still need to restart wait0 by explicitly orchestrating it (for example,  docker restart wait0).
+
 If you do not restart between deploys, proactively refresh cache using invalidation and warmup for critical routes.
 
 ## Under the Hood
 
 - Request pipeline: RAM cache -> disk cache -> origin.
-- Cache key is path-only (query and fragment are ignored for cache identity).
+- Cache key is path-only by default.
+- Rule field `varyByQueryParams[]` opts specific query parameters into cache identity for matching paths.
+- Query parameters not listed in `varyByQueryParams[]` and all fragments are ignored for cache identity.
 - Only `GET` requests are cache candidates.
 - Only origin `2xx` responses are stored.
 - For stale entries (rule `expiration`), wait0 serves cached response immediately and revalidates asynchronously.
 - For origin non-`2xx`, wait0 skips caching and evicts any existing key for that path.
-- Invalidation is asynchronous: accept request -> resolve keys by `paths` and `tags` -> delete keys -> recrawl in background.
+- Invalidation is asynchronous: accept request -> resolve keys by `paths` and `tags` -> delete keys -> recrawl in background. Path invalidation clears all cached query-aware variants for that path.

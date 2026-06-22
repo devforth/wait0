@@ -24,6 +24,7 @@ type Entry struct {
 type Rule struct {
 	Bypass            bool
 	BypassWhenCookies []string
+	VaryByQueryParams []string
 	Expiration        time.Duration
 }
 

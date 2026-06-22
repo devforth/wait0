@@ -56,7 +56,9 @@ func TestInvalidationRuntimeAdapter_KeyOpsAndTags(t *testing.T) {
 }
 
 func TestInvalidationRuntimeAdapter_RecrawlKey(t *testing.T) {
+	var seenQuery string
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenQuery = r.URL.RawQuery
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("fresh"))
 	}))
@@ -65,9 +67,12 @@ func TestInvalidationRuntimeAdapter_RecrawlKey(t *testing.T) {
 	s := newTestService(t, origin.URL, nil)
 	a := newInvalidationRuntimeAdapter(s)
 
-	kind := a.RecrawlKey(context.Background(), "/page")
+	kind := a.RecrawlKey(context.Background(), "/page?page=1")
 	if kind != "updated" {
 		t.Fatalf("RecrawlKey kind = %q, want updated", kind)
+	}
+	if seenQuery != "page=1" {
+		t.Fatalf("origin raw query = %q, want page=1", seenQuery)
 	}
 
 	s.reval = nil

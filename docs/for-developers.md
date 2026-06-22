@@ -128,6 +128,7 @@ For dashboard:
 | `priority` | no | Rules are sorted ascending by priority |
 | `bypass` | no | For matching paths, bypass cache completely |
 | `bypassWhenCookies[]` | no | If any listed cookie exists, bypass cache |
+| `varyByQueryParams[]` | no | Query params that should participate in cache identity for matching paths |
 | `expiration` | no | Duration for stale check and async revalidation |
 | `warmUp.runEvery` | with `warmUp` | Duration, must be `> 0` |
 | `warmUp.maxRequestsAtATime` | with `warmUp` | Must be `> 0` |
@@ -152,7 +153,9 @@ For dashboard:
 
 ## Operational Notes
 
-- Cache key is path-only (`/a/b`); query and fragment are ignored for cache identity.
+- Cache key is path-only by default (`/a/b`).
+- Rule field `varyByQueryParams[]` opt-ins selected query params so `/a/b?page`, `/a/b?page=1`, and `/a/b` can be distinct cache entries.
+- Query params not listed in `varyByQueryParams[]` and all fragments are ignored for cache identity.
 - Only `GET` requests are cache-eligible.
 - Non-2xx origin responses are not cached and existing cached key is removed.
 - Dynamic pages are expected to send `Cache-Control: no-cache` or `no-store` so wait0 treats them as passthrough and revalidation-managed.

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"wait0/internal/wait0/invalidation"
+	"wait0/internal/wait0/proxy"
 )
 
 type invalidationRuntimeAdapter struct {
@@ -83,7 +84,8 @@ func (a *invalidationRuntimeAdapter) RecrawlKey(ctx context.Context, key string)
 	if a.s.reval == nil {
 		return "error"
 	}
-	return a.s.reval.Once(ctx, key, key, "", "invalidate").Kind
+	path, query := proxy.SplitCacheKey(key)
+	return a.s.reval.Once(ctx, key, path, query, "invalidate").Kind
 }
 
 func (a *invalidationRuntimeAdapter) peekCacheEntry(key string) (CacheEntry, bool) {

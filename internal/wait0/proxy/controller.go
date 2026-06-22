@@ -32,8 +32,13 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := r.URL.Path
-	key := path
 	rule := c.rt.PickRule(path)
+	varyByQueryParams := []string(nil)
+	if rule != nil {
+		varyByQueryParams = rule.VaryByQueryParams
+	}
+	cacheQuery := CanonicalCacheQuery(r.URL.RawQuery, varyByQueryParams)
+	key := JoinCacheKey(path, cacheQuery)
 
 	if rule != nil {
 		if rule.Bypass {
@@ -56,7 +61,7 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 		if !ent.Inactive {
 			c.rt.WriteEntryWithStats(w, ent, "hit")
 			if rule != nil && rule.Expiration > 0 && IsStale(ent, rule.Expiration) {
-				c.rt.RevalidateAsync(key, r.URL.Path, r.URL.RawQuery)
+				c.rt.RevalidateAsync(key, path, cacheQuery)
 			}
 			return
 		}
@@ -67,7 +72,7 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 			c.rt.PromoteRAM(key, ent)
 			c.rt.WriteEntryWithStats(w, ent, "hit")
 			if rule != nil && rule.Expiration > 0 && IsStale(ent, rule.Expiration) {
-				c.rt.RevalidateAsync(key, r.URL.Path, r.URL.RawQuery)
+				c.rt.RevalidateAsync(key, path, cacheQuery)
 			}
 			return
 		}

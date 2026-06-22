@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"wait0/internal/wait0/auth"
+	"wait0/internal/wait0/proxy"
 )
 
 const WriteScope = "invalidation:write"
@@ -221,8 +222,8 @@ func (c *Controller) workerLoop(workerID int) {
 func (c *Controller) processJob(workerID int, job Job) {
 	start := time.Now()
 	keys := make(map[string]struct{}, len(job.Paths))
-	for _, p := range job.Paths {
-		keys[p] = struct{}{}
+	for _, key := range c.resolveKeysByPaths(job.Paths) {
+		keys[key] = struct{}{}
 	}
 	if len(job.Tags) > 0 {
 		tagSet := make(map[string]struct{}, len(job.Tags))
@@ -292,6 +293,35 @@ func (c *Controller) processJob(workerID int, job Job) {
 		recrawlErrs,
 		time.Since(start).Truncate(time.Millisecond),
 	)
+}
+
+func (c *Controller) resolveKeysByPaths(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	byPath := make(map[string][]string)
+	for _, key := range c.rt.CachedKeys() {
+		path := proxy.CacheKeyPath(key)
+		byPath[path] = append(byPath[path], key)
+	}
+
+	keys := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		matched := byPath[path]
+		if len(matched) == 0 {
+			keys[path] = struct{}{}
+			continue
+		}
+		for _, key := range matched {
+			keys[key] = struct{}{}
+		}
+	}
+
+	out := make([]string, 0, len(keys))
+	for key := range keys {
+		out = append(out, key)
+	}
+	return out
 }
 
 func (c *Controller) resolveKeysByTags(tags map[string]struct{}) []string {

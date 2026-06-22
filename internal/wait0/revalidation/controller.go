@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"wait0/internal/wait0/proxy"
 )
 
 type Logger interface {
@@ -263,7 +265,8 @@ func (c *Controller) WarmupGroupLoop(rule WarmRule) {
 				defer func() { <-sem }()
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
-				results <- c.Once(ctx, k, k, "", "warmup")
+				path, query := proxy.SplitCacheKey(k)
+				results <- c.Once(ctx, k, path, query, "warmup")
 			}(key)
 		}
 	}
@@ -373,7 +376,8 @@ func (c *Controller) KeysByLastAccessDesc(rule WarmRule) []string {
 		ts int64
 	}, 0, len(access))
 	for k, ts := range access {
-		if rule.Matches != nil && !rule.Matches(k) {
+		path := proxy.CacheKeyPath(k)
+		if rule.Matches != nil && !rule.Matches(path) {
 			continue
 		}
 		items = append(items, struct {

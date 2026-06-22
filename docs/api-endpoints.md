@@ -259,10 +259,11 @@ Rules:
 - At least one non-empty value from `paths` or `tags` is required.
 - Unknown JSON fields are rejected.
 - Payload must be a single JSON object.
-- `paths` are normalized to path-only keys:
+- `paths` are normalized to path-only values:
   - full URLs are accepted and converted to their path,
-  - query/fragment are removed from the cache key,
+  - query/fragment are removed from the invalidation path selector,
   - query-only or fragment-only inputs are rejected.
+- invalidating a path clears every cached key for that path, including query-aware variants produced by rule `varyByQueryParams[]`.
 - `tags` are trimmed, deduplicated, and cannot contain CR/LF characters.
 
 ## Successful response

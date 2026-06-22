@@ -61,6 +61,7 @@ func (a *proxyRuntimeAdapter) PickRule(path string) *proxy.Rule {
 	return &proxy.Rule{
 		Bypass:            r.Bypass,
 		BypassWhenCookies: append([]string(nil), r.BypassWhenCookies...),
+		VaryByQueryParams: append([]string(nil), r.VaryByQueryParams...),
 		Expiration:        r.expDur,
 	}
 }

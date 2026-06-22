@@ -156,6 +156,9 @@ func TestController_Async_ExecutesOnce(t *testing.T) {
 	if len(rt.requests) != 1 {
 		t.Fatalf("requests = %d, want 1", len(rt.requests))
 	}
+	if got := rt.requests[0].URL.RawQuery; got != "q=1" {
+		t.Fatalf("raw query = %q, want q=1", got)
+	}
 }
 
 func TestController_Once_Branches(t *testing.T) {
@@ -228,10 +231,10 @@ func TestController_Once_Branches(t *testing.T) {
 			wantDeleted: true,
 		},
 		{
-			name:       "origin error",
-			doErr:      errors.New("origin down"),
-			wantKind:   "error",
-			wantChanged:false,
+			name:        "origin error",
+			doErr:       errors.New("origin down"),
+			wantKind:    "error",
+			wantChanged: false,
 		},
 		{
 			name:       "read error",
@@ -308,8 +311,13 @@ func TestController_KeysAndAllKeysSnapshot(t *testing.T) {
 	var wg sync.WaitGroup
 	c := NewController(rt, make(chan struct{}, 1), make(chan struct{}), &wg, false, nil, nil, nil)
 
+	rt.access = map[string]int64{
+		"/b?page=1": 2,
+		"/a":        2,
+		"/c":        1,
+	}
 	keys := c.KeysByLastAccessDesc(WarmRule{Matches: func(path string) bool { return path != "/c" }})
-	want := []string{"/a", "/b"}
+	want := []string{"/a", "/b?page=1"}
 	if len(keys) != len(want) {
 		t.Fatalf("keys len = %d, want %d", len(keys), len(want))
 	}
@@ -333,7 +341,7 @@ func TestController_KeysAndAllKeysSnapshot(t *testing.T) {
 
 func TestController_WarmupGroupLoop_StopAndLogs(t *testing.T) {
 	rt := newFakeRuntime()
-	rt.access = map[string]int64{"/x": 10, "/y": 9}
+	rt.access = map[string]int64{"/x?page=1": 10, "/y": 9}
 	rt.peekMap["/x"] = Entry{Hash32: 1}
 	rt.peekMap["/y"] = Entry{Hash32: 2}
 	rt.doFunc = func(req *http.Request) (*http.Response, error) {
@@ -370,5 +378,18 @@ func TestController_WarmupGroupLoop_StopAndLogs(t *testing.T) {
 	}
 	if errorLog.count() == 0 {
 		t.Fatalf("expected warmup error log")
+	}
+	if len(rt.requests) == 0 {
+		t.Fatalf("expected warmup requests")
+	}
+	found := false
+	for _, req := range rt.requests {
+		if req.URL.Path == "/x" && req.URL.RawQuery == "page=1" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected warmup request for /x?page=1, got %#v", rt.requests)
 	}
 }

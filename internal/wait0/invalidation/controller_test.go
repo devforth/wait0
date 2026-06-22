@@ -96,3 +96,31 @@ func TestProcessJob_ByTag(t *testing.T) {
 		t.Fatalf("expected /b to remain present")
 	}
 }
+
+func TestProcessJob_PathInvalidatesAllQueryVariants(t *testing.T) {
+	rt := &fakeRuntime{
+		tagsByKey: map[string][]string{
+			"/a":        {"t1"},
+			"/a?page=1": {"t1"},
+			"/b":        {"t2"},
+		},
+		present: map[string]bool{
+			"/a":        true,
+			"/a?page=1": true,
+			"/b":        true,
+		},
+	}
+	ctrl := NewController(Config{Enabled: true, QueueSize: 1, WorkerConcurrency: 2, MaxBodyBytes: 4096, MaxPaths: 10, MaxTags: 10}, auth.NewAuthenticator(nil), rt, make(chan struct{}), nil)
+
+	ctrl.processJob(1, Job{RequestID: "r2", ActorID: "x", Paths: []string{"/a"}})
+
+	if !rt.present["/a"] {
+		t.Fatalf("expected /a to be recrawled and present")
+	}
+	if !rt.present["/a?page=1"] {
+		t.Fatalf("expected /a?page=1 to be recrawled and present")
+	}
+	if !rt.present["/b"] {
+		t.Fatalf("expected /b to remain present")
+	}
+}
