@@ -119,7 +119,30 @@ Status: `200 OK`
     "discovered_urls": 80,
     "crawled_urls": 60,
     "crawl_percentage": 75
-  }
+  },
+  "rules": [
+    {
+      "id": 0,
+      "match": "PathPrefix(/)",
+      "priority": 2,
+      "urls": 123,
+      "responses": 120,
+      "ram_size_bytes": 345678,
+      "disk_size_bytes": 567890,
+      "warmup": {
+        "configured": true,
+        "pause_between_runs_ms": 10000,
+        "last_loop_duration_ms": 1532,
+        "last_finished_at": "2026-03-05T09:59:56Z",
+        "last_finished_seconds_ago": 4,
+        "urls": 123,
+        "top_slowest_urls": [{"url": "/reports", "duration_ms": 119.4}],
+        "top_fastest_urls": [{"url": "/", "duration_ms": 19.2}]
+      },
+      "top_largest_responses": [{"url": "/reports", "size_bytes": 4096}],
+      "top_smallest_responses": [{"url": "/", "size_bytes": 128}]
+    }
+  ]
 }
 ```
 
@@ -144,6 +167,23 @@ The table below explains each field in the stats payload, including what it mean
 | `sitemap.discovered_urls` | integer | Number of unique cached keys whose discovery source is sitemap. | Count of unique keys where `discovered_by == "sitemap"` (case-insensitive). | Recomputed per snapshot. |
 | `sitemap.crawled_urls` | integer | Number of sitemap-discovered keys that are currently active (not inactive seed entries). | Count of sitemap keys where `inactive == false`. | Recomputed per snapshot. |
 | `sitemap.crawl_percentage` | float | Share of sitemap-discovered keys currently crawled/active. | `crawled_urls * 100 / discovered_urls`; `0` if `discovered_urls == 0`. | Recomputed per snapshot. |
+| `rules[]` | array | One entry for every configured rule, including rules with zero URLs or responses. | Configuration order after priority sorting. Cached keys are assigned to the first matching rule. | Recomputed per snapshot. |
+| `rules[].urls` | integer | Unique RAM/disk keys assigned to this rule, including inactive discovery seeds. | Union of matching RAM and disk keys. | `0` when empty. |
+| `rules[].responses` | integer | Active responses assigned to this rule. | Matching unique keys where `inactive == false`. | `0` when the rule has no responses. |
+| `rules[].ram_size_bytes` | integer (bytes) | Encoded bytes occupied by this rule in RAM. | Sum of matching RAM entry storage sizes. | A key present in both tiers contributes to both tier sizes. |
+| `rules[].disk_size_bytes` | integer (bytes) | Encoded bytes occupied by this rule on disk. | Sum of matching LevelDB entry storage sizes. | A key present in both tiers contributes to both tier sizes. |
+| `rules[].warmup.configured` | boolean | Whether this rule has warmup configured. | `pauseBetweenRuns > 0` and `maxRequestsAtATime > 0`. | False rules are displayed as `- not set`. |
+| `rules[].warmup.pause_between_runs_ms` | integer (ms) | Configured guaranteed pause between complete warmup loops. | Parsed `pauseBetweenRuns` duration. | `0` when warmup is not configured. |
+| `rules[].warmup.last_loop_duration_ms` | integer or null | Wall-clock duration of the last fully completed warmup loop. | Finish time minus batch start time; excludes the pause between runs. | `null` until the first loop finishes or when warmup is not set. |
+| `rules[].warmup.last_finished_at` | RFC3339Nano string or null | UTC finish time of the last complete loop. | Recorded only after every URL in that loop finishes. | `null` until first completion. |
+| `rules[].warmup.last_finished_seconds_ago` | integer or null | Whole seconds since the last completed loop. | Snapshot time minus `last_finished_at`. | Dashboard also derives the live value from the timestamp. |
+| `rules[].warmup.urls` | integer | URL attempts completed in the last full warmup loop. | Count of results in that loop's fixed URL snapshot. | `0` before a non-empty loop completes. |
+| `rules[].warmup.top_slowest_urls[]` | array | Up to 10 slowest URL attempts from the last completed loop. | Descending request duration. | Empty when no completed URL attempts exist. |
+| `rules[].warmup.top_fastest_urls[]` | array | Up to 10 fastest URL attempts from the last completed loop. | Ascending request duration. | Empty when no completed URL attempts exist. |
+| `rules[].top_largest_responses[]` | array | Up to 10 largest active cached responses currently assigned to the rule. | Descending logical response size (`headers + body`). | Empty when the rule has no responses. |
+| `rules[].top_smallest_responses[]` | array | Up to 10 smallest active cached responses currently assigned to the rule. | Ascending logical response size (`headers + body`). | Empty when the rule has no responses. |
+
+Per-rule rankings are maintained incrementally with a hard 10-entry bound: when a better candidate arrives, the previous last-place entry is replaced immediately. Warmup history is also bounded to exactly one completed loop per rule; completing a new loop removes the prior loop before publishing the new summary.
 
 ### Additional interpretation notes
 
@@ -187,6 +227,7 @@ If either credential env variable is missing, dashboard routes are not registere
 - `GET /wait0/dashboard` serves a lightweight HTML page with:
   - parsed stats cards,
   - simple charts over time (client-side in-memory history),
+  - one panel per configured rule with URL count, RAM/disk occupancy, last-loop warmup timing, completion age, and top latency/response-size rankings,
   - invalidation form.
 - `GET /wait0/dashboard/stats` bridges to `GET /wait0` server-side.
 - `POST /wait0/dashboard/invalidate` bridges to `POST /wait0/invalidate` server-side.

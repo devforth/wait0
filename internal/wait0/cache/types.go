@@ -20,6 +20,9 @@ type EntryMeta struct {
 	// Size is logical response size in bytes (headers + body).
 	Size int64
 
+	// StorageSize is the encoded number of bytes occupied in this cache tier.
+	StorageSize int64
+
 	Inactive     bool
 	DiscoveredBy string
 

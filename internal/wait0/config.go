@@ -2,6 +2,7 @@ package wait0
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"sort"
 	"strings"
@@ -92,11 +93,9 @@ type AuthTokenConfig struct {
 }
 
 type WarmUpConfig struct {
+	PauseBetweenRuns   string `yaml:"pauseBetweenRuns"`
 	RunEvery           string `yaml:"runEvery"`
 	MaxRequestsAtATime int    `yaml:"maxRequestsAtATime"`
-
-	// compiled
-	runEveryDur time.Duration `yaml:"-"`
 }
 
 type Rule struct {
@@ -112,7 +111,7 @@ type Rule struct {
 	// compiled
 	matchers  []pathPrefixMatcher
 	expDur    time.Duration
-	warmEvery time.Duration
+	warmPause time.Duration
 	warmMax   int
 }
 
@@ -226,21 +225,32 @@ func LoadConfig(path string) (Config, error) {
 			r.expDur = d
 		}
 		if r.WarmUp != nil {
-			if strings.TrimSpace(r.WarmUp.RunEvery) == "" {
-				return Config{}, fmt.Errorf("rules[%d].warmUp.runEvery: is required", i)
+			pauseBetweenRuns := strings.TrimSpace(r.WarmUp.PauseBetweenRuns)
+			legacyRunEvery := strings.TrimSpace(r.WarmUp.RunEvery)
+			if pauseBetweenRuns != "" && legacyRunEvery != "" {
+				return Config{}, fmt.Errorf("rules[%d].warmUp: pauseBetweenRuns and deprecated runEvery cannot both be set", i)
 			}
-			d, err := time.ParseDuration(r.WarmUp.RunEvery)
+			fieldName := "pauseBetweenRuns"
+			if legacyRunEvery != "" {
+				fieldName = "runEvery"
+				pauseBetweenRuns = legacyRunEvery
+				r.WarmUp.PauseBetweenRuns = legacyRunEvery
+				log.Printf("WARNING: rules[%d].warmUp.runEvery is deprecated; replace it with pauseBetweenRuns. Warmup now waits this duration after a full loop finishes before loading the next URL snapshot.", i)
+			}
+			if pauseBetweenRuns == "" {
+				return Config{}, fmt.Errorf("rules[%d].warmUp.pauseBetweenRuns: is required", i)
+			}
+			d, err := time.ParseDuration(pauseBetweenRuns)
 			if err != nil {
-				return Config{}, fmt.Errorf("rules[%d].warmUp.runEvery: %w", i, err)
+				return Config{}, fmt.Errorf("rules[%d].warmUp.%s: %w", i, fieldName, err)
 			}
 			if d <= 0 {
-				return Config{}, fmt.Errorf("rules[%d].warmUp.runEvery: must be > 0", i)
+				return Config{}, fmt.Errorf("rules[%d].warmUp.%s: must be > 0", i, fieldName)
 			}
 			if r.WarmUp.MaxRequestsAtATime <= 0 {
 				return Config{}, fmt.Errorf("rules[%d].warmUp.maxRequestsAtATime: must be > 0", i)
 			}
-			r.WarmUp.runEveryDur = d
-			r.warmEvery = d
+			r.warmPause = d
 			r.warmMax = r.WarmUp.MaxRequestsAtATime
 		}
 	}

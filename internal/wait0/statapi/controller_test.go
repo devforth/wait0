@@ -2,8 +2,10 @@ package statapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,9 +13,11 @@ import (
 )
 
 type fakeRuntime struct {
-	ram  map[string]EntryMeta
-	disk map[string]EntryMeta
-	dur  MetricTriplet
+	ram     map[string]EntryMeta
+	disk    map[string]EntryMeta
+	dur     MetricTriplet
+	rules   []RuleDefinition
+	warmups map[int]WarmupLoopSnapshot
 }
 
 func (f *fakeRuntime) RAMMetaSnapshot() map[string]EntryMeta {
@@ -34,6 +38,18 @@ func (f *fakeRuntime) DiskMetaSnapshot() map[string]EntryMeta {
 
 func (f *fakeRuntime) RefreshDurationStatsMillis() MetricTriplet {
 	return f.dur
+}
+
+func (f *fakeRuntime) RuleDefinitions() []RuleDefinition {
+	return append([]RuleDefinition(nil), f.rules...)
+}
+
+func (f *fakeRuntime) WarmupLoopSnapshots() map[int]WarmupLoopSnapshot {
+	out := make(map[int]WarmupLoopSnapshot, len(f.warmups))
+	for id, snapshot := range f.warmups {
+		out[id] = snapshot
+	}
+	return out
 }
 
 func TestIsEndpointPath(t *testing.T) {
@@ -89,14 +105,27 @@ func TestHandle_MetricsPayload(t *testing.T) {
 	authn := auth.NewAuthenticator([]auth.TokenConfig{{ID: "reader", Token: "tok", Scopes: []string{ReadScope}}})
 	ctrl := NewController(authn, &fakeRuntime{
 		ram: map[string]EntryMeta{
-			"/a": {Size: 100, LastRefreshUnixNano: now.Add(-10 * time.Second).UnixNano(), DiscoveredBy: "sitemap", Inactive: false},
-			"/b": {Size: 300, LastRefreshUnixNano: now.Add(-20 * time.Second).UnixNano(), DiscoveredBy: "sitemap", Inactive: true},
+			"/a": {Size: 100, StorageSize: 110, LastRefreshUnixNano: now.Add(-10 * time.Second).UnixNano(), DiscoveredBy: "sitemap", Inactive: false},
+			"/b": {Size: 300, StorageSize: 310, LastRefreshUnixNano: now.Add(-20 * time.Second).UnixNano(), DiscoveredBy: "sitemap", Inactive: true},
 		},
 		disk: map[string]EntryMeta{
-			"/b": {Size: 999, LastRefreshUnixNano: now.Add(-1 * time.Second).UnixNano()},
-			"/c": {Size: 500, LastRefreshUnixNano: now.Add(-30 * time.Second).UnixNano(), DiscoveredBy: "user"},
+			"/b": {Size: 999, StorageSize: 1009, LastRefreshUnixNano: now.Add(-1 * time.Second).UnixNano()},
+			"/c": {Size: 500, StorageSize: 510, LastRefreshUnixNano: now.Add(-30 * time.Second).UnixNano(), DiscoveredBy: "user"},
 		},
 		dur: MetricTriplet{Min: 19, Avg: 66, Max: 119},
+		rules: []RuleDefinition{
+			{ID: 0, Match: "PathPrefix(/)", Priority: 2, WarmupConfigured: true, PauseBetweenRuns: 10 * time.Second, Matches: func(path string) bool { return strings.HasPrefix(path, "/") }},
+			{ID: 1, Match: "PathPrefix(/none)", Priority: 3, Matches: func(path string) bool { return strings.HasPrefix(path, "/none") }},
+		},
+		warmups: map[int]WarmupLoopSnapshot{
+			0: {
+				Duration:   1500 * time.Millisecond,
+				FinishedAt: now.Add(-4 * time.Second),
+				URLs:       3,
+				TopSlowest: []WarmupURLMetric{{URL: "/c", Duration: 120 * time.Millisecond}, {URL: "/a", Duration: 20 * time.Millisecond}},
+				TopFastest: []WarmupURLMetric{{URL: "/a", Duration: 20 * time.Millisecond}, {URL: "/c", Duration: 120 * time.Millisecond}},
+			},
+		},
 	})
 
 	w := httptest.NewRecorder()
@@ -135,6 +164,38 @@ func TestHandle_MetricsPayload(t *testing.T) {
 	if uint64(durObj["min"].(float64)) != 19 || uint64(durObj["avg"].(float64)) != 66 || uint64(durObj["max"].(float64)) != 119 {
 		t.Fatalf("refresh_duration_ms=%v", durObj)
 	}
+
+	rules := resp["rules"].([]any)
+	if len(rules) != 2 {
+		t.Fatalf("rules=%v", rules)
+	}
+	rootRule := rules[0].(map[string]any)
+	if int(rootRule["urls"].(float64)) != 3 || int(rootRule["responses"].(float64)) != 2 {
+		t.Fatalf("root rule counts=%v", rootRule)
+	}
+	if uint64(rootRule["ram_size_bytes"].(float64)) != 420 || uint64(rootRule["disk_size_bytes"].(float64)) != 1519 {
+		t.Fatalf("root rule tier sizes=%v", rootRule)
+	}
+	largest := rootRule["top_largest_responses"].([]any)
+	smallest := rootRule["top_smallest_responses"].([]any)
+	if largest[0].(map[string]any)["url"] != "/c" || smallest[0].(map[string]any)["url"] != "/a" {
+		t.Fatalf("unexpected response rankings: largest=%v smallest=%v", largest, smallest)
+	}
+	warmup := rootRule["warmup"].(map[string]any)
+	if warmup["configured"] != true || uint64(warmup["last_loop_duration_ms"].(float64)) != 1500 {
+		t.Fatalf("root rule warmup=%v", warmup)
+	}
+	if len(warmup["top_slowest_urls"].([]any)) != 2 || len(warmup["top_fastest_urls"].([]any)) != 2 {
+		t.Fatalf("root rule warmup rankings=%v", warmup)
+	}
+
+	emptyRule := rules[1].(map[string]any)
+	if int(emptyRule["urls"].(float64)) != 0 || emptyRule["warmup"].(map[string]any)["configured"] != false {
+		t.Fatalf("empty rule=%v", emptyRule)
+	}
+	if len(emptyRule["top_largest_responses"].([]any)) != 0 {
+		t.Fatalf("empty rule should have empty response rankings: %v", emptyRule)
+	}
 }
 
 func TestHandle_UsesSnapshotCacheWithinTTL(t *testing.T) {
@@ -161,5 +222,28 @@ func TestHandle_UsesSnapshotCacheWithinTTL(t *testing.T) {
 	cacheObj := resp["cache"].(map[string]any)
 	if int(cacheObj["urls_total"].(float64)) != 1 {
 		t.Fatalf("expected cached snapshot to keep urls_total=1, got %v", cacheObj["urls_total"])
+	}
+}
+
+func TestTopResponseSizes_KeepsTenInOrder(t *testing.T) {
+	var largest []urlSizePayload
+	var smallest []urlSizePayload
+	for i := 0; i < 1000; i++ {
+		item := urlSizePayload{URL: fmt.Sprintf("/%02d", i), SizeBytes: uint64(i + 1)}
+		largest = addResponseSize(largest, item, false)
+		smallest = addResponseSize(smallest, item, true)
+		if len(largest) > maxRankedURLs || cap(largest) > maxRankedURLs {
+			t.Fatalf("largest retained more than %d entries: len=%d cap=%d", maxRankedURLs, len(largest), cap(largest))
+		}
+		if len(smallest) > maxRankedURLs || cap(smallest) > maxRankedURLs {
+			t.Fatalf("smallest retained more than %d entries: len=%d cap=%d", maxRankedURLs, len(smallest), cap(smallest))
+		}
+	}
+
+	if len(largest) != 10 || largest[0].SizeBytes != 1000 || largest[9].SizeBytes != 991 {
+		t.Fatalf("largest = %v", largest)
+	}
+	if len(smallest) != 10 || smallest[0].SizeBytes != 1 || smallest[9].SizeBytes != 10 {
+		t.Fatalf("smallest = %v", smallest)
 	}
 }

@@ -132,6 +132,95 @@ var dashboardTemplate = template.Must(template.New("dashboard").Parse(`<!doctype
       color: var(--muted);
       font-size: 13px;
     }
+    .section-title {
+      margin: 22px 0 10px;
+      font-size: 18px;
+    }
+    .rule-list {
+      display: grid;
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+    .rule-card {
+      padding: 14px;
+    }
+    .rule-heading {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .rule-heading code {
+      font-family: "IBM Plex Mono", "Iosevka", monospace;
+      font-size: 15px;
+      overflow-wrap: anywhere;
+    }
+    .rule-metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .rule-metric {
+      background: var(--accent-soft);
+      border-radius: 8px;
+      padding: 9px;
+    }
+    .rule-metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 3px;
+    }
+    .rule-metric strong {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 14px;
+      overflow-wrap: anywhere;
+    }
+    .rankings {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 10px;
+    }
+    .ranking {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px;
+      min-width: 0;
+    }
+    .ranking h3 {
+      margin: 0 0 7px;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .ranking ol {
+      margin: 0;
+      padding-left: 22px;
+    }
+    .ranking li {
+      margin: 4px 0;
+      font-size: 12px;
+    }
+    .ranking-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .ranking-row code {
+      overflow-wrap: anywhere;
+      min-width: 0;
+    }
+    .ranking-value {
+      color: var(--muted);
+      white-space: nowrap;
+      font-family: "IBM Plex Mono", monospace;
+    }
   </style>
 </head>
 <body>
@@ -163,6 +252,11 @@ var dashboardTemplate = template.Must(template.New("dashboard").Parse(`<!doctype
         <h2>Refresh Avg (ms)</h2>
         <div id="c-refresh" class="muted"></div>
       </div>
+    </div>
+
+    <h2 class="section-title">Rules</h2>
+    <div id="rules-list" class="rule-list">
+      <div class="card muted">Loading rules...</div>
     </div>
 
     <div class="card">
@@ -222,6 +316,133 @@ var dashboardTemplate = template.Must(template.New("dashboard").Parse(`<!doctype
       return Number.isFinite(n) ? n : 0;
     }
 
+    function toHumanDuration(v) {
+      const ms = Number(v);
+      if (!Number.isFinite(ms) || ms < 0) return '-';
+      if (ms < 1000) return ms.toFixed(ms < 10 ? 1 : 0) + ' ms';
+      const seconds = ms / 1000;
+      if (seconds < 60) return seconds.toFixed(seconds < 10 ? 1 : 0) + ' s';
+      const minutes = seconds / 60;
+      return minutes.toFixed(minutes < 10 ? 1 : 0) + ' min';
+    }
+
+    function secondsAgo(iso) {
+      if (!iso) return 'not run yet';
+      const finished = Date.parse(iso);
+      if (!Number.isFinite(finished)) return 'not run yet';
+      const seconds = Math.max(0, Math.floor((Date.now() - finished) / 1000));
+      return seconds + 's ago';
+    }
+
+    function makeElement(tag, className, text) {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (text !== undefined) element.textContent = text;
+      return element;
+    }
+
+    function appendRuleMetric(host, label, value) {
+      const metric = makeElement('div', 'rule-metric');
+      metric.appendChild(makeElement('span', '', label));
+      metric.appendChild(makeElement('strong', '', value));
+      host.appendChild(metric);
+    }
+
+    function makeRanking(title, items, valueKey, formatter, emptyText) {
+      const ranking = makeElement('div', 'ranking');
+      ranking.appendChild(makeElement('h3', '', title));
+      if (!Array.isArray(items) || items.length === 0) {
+        ranking.appendChild(makeElement('div', 'muted', emptyText));
+        return ranking;
+      }
+      const list = makeElement('ol');
+      for (const item of items) {
+        const row = makeElement('div', 'ranking-row');
+        row.appendChild(makeElement('code', '', String(item?.url || '-')));
+        row.appendChild(makeElement('span', 'ranking-value', formatter(item?.[valueKey])));
+        const li = makeElement('li');
+        li.appendChild(row);
+        list.appendChild(li);
+      }
+      ranking.appendChild(list);
+      return ranking;
+    }
+
+    function renderRules(payload) {
+      const host = byId('rules-list');
+      if (!host) return;
+      host.replaceChildren();
+      const rules = Array.isArray(payload?.rules) ? payload.rules : [];
+      if (rules.length === 0) {
+        host.appendChild(makeElement('div', 'card muted', 'No rules configured.'));
+        return;
+      }
+
+      for (const rule of rules) {
+        const card = makeElement('section', 'card rule-card');
+        const heading = makeElement('div', 'rule-heading');
+        heading.appendChild(makeElement('code', '', String(rule?.match || '-')));
+        heading.appendChild(makeElement('span', 'muted', 'priority ' + toNum(rule?.priority)));
+        card.appendChild(heading);
+
+        const warmup = rule?.warmup || {};
+        const warmupConfigured = warmup?.configured === true;
+        const duration = !warmupConfigured
+          ? '- not set'
+          : warmup?.last_loop_duration_ms == null
+            ? 'not run yet'
+            : toHumanDuration(warmup.last_loop_duration_ms);
+        const finished = !warmupConfigured ? '- not set' : secondsAgo(warmup?.last_finished_at);
+
+        const metrics = makeElement('div', 'rule-metrics');
+        appendRuleMetric(metrics, 'URLs', String(toNum(rule?.urls)));
+        appendRuleMetric(metrics, 'Responses', String(toNum(rule?.responses)));
+        appendRuleMetric(metrics, 'RAM size', toHumanBytes(rule?.ram_size_bytes));
+        appendRuleMetric(metrics, 'Disk size', toHumanBytes(rule?.disk_size_bytes));
+        appendRuleMetric(metrics, 'Last warmup loop', duration);
+        appendRuleMetric(metrics, 'Warmup finished', finished);
+        appendRuleMetric(
+          metrics,
+          'Pause between runs',
+          warmupConfigured ? toHumanDuration(warmup?.pause_between_runs_ms) : '- not set'
+        );
+        card.appendChild(metrics);
+
+        const noWarmupData = !warmupConfigured ? 'Warmup not set.' : 'No completed warmup data.';
+        const rankings = makeElement('div', 'rankings');
+        rankings.appendChild(makeRanking(
+          '10 slowest · last loop',
+          warmup?.top_slowest_urls,
+          'duration_ms',
+          toHumanDuration,
+          noWarmupData
+        ));
+        rankings.appendChild(makeRanking(
+          '10 fastest · last loop',
+          warmup?.top_fastest_urls,
+          'duration_ms',
+          toHumanDuration,
+          noWarmupData
+        ));
+        rankings.appendChild(makeRanking(
+          '10 largest responses',
+          rule?.top_largest_responses,
+          'size_bytes',
+          toHumanBytes,
+          'No responses.'
+        ));
+        rankings.appendChild(makeRanking(
+          '10 smallest responses',
+          rule?.top_smallest_responses,
+          'size_bytes',
+          toHumanBytes,
+          'No responses.'
+        ));
+        card.appendChild(rankings);
+        host.appendChild(card);
+      }
+    }
+
     function linePath(points, width, height, pad) {
       if (!points.length) return '';
       const min = Math.min(...points);
@@ -276,6 +497,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Parse(`<!doctype
       renderChart('c-urls', history.map((x) => x.urls), (v) => String(v));
       renderChart('c-rss', history.map((x) => x.rss), (v) => toHumanBytes(v));
       renderChart('c-refresh', history.map((x) => x.refreshAvg), (v) => String(v) + ' ms');
+      renderRules(payload);
     }
 
     async function refreshStats() {

@@ -170,6 +170,20 @@ func TestHandle_IndexRendersPage(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "wait0 dashboard") {
 		t.Fatalf("expected dashboard title in page")
 	}
+	for _, expected := range []string{
+		`id="rules-list"`,
+		"Last warmup loop",
+		"10 slowest · last loop",
+		"10 fastest · last loop",
+		"10 largest responses",
+		"10 smallest responses",
+		"renderRules(payload)",
+		"No responses.",
+	} {
+		if !strings.Contains(w.Body.String(), expected) {
+			t.Fatalf("expected dashboard page to contain %q", expected)
+		}
+	}
 	if len(w.Result().Cookies()) == 0 {
 		t.Fatalf("expected csrf cookie in response")
 	}

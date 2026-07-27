@@ -3,11 +3,13 @@ package revalidation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -393,7 +395,7 @@ func TestController_WarmupGroupLoop_StopAndLogs(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		c.WarmupGroupLoop(WarmRule{Match: "/", WarmEvery: 10 * time.Millisecond, WarmMax: 2, Matches: func(string) bool { return true }})
+		c.WarmupGroupLoop(WarmRule{ID: 7, Match: "/", PauseBetweenRuns: 10 * time.Millisecond, WarmMax: 2, Matches: func(string) bool { return true }})
 		close(done)
 	}()
 
@@ -425,5 +427,150 @@ func TestController_WarmupGroupLoop_StopAndLogs(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected warmup request for /x?page=1, got %#v", rt.requests)
+	}
+	summary, ok := c.WarmupSummaries()[7]
+	if !ok {
+		t.Fatal("expected completed warmup summary")
+	}
+	if summary.URLs != 2 || summary.FinishedAt.IsZero() || summary.Took <= 0 {
+		t.Fatalf("unexpected warmup summary: %+v", summary)
+	}
+	if len(summary.TopFastest) != 2 || len(summary.TopSlowest) != 2 {
+		t.Fatalf("unexpected warmup rankings: fastest=%v slowest=%v", summary.TopFastest, summary.TopSlowest)
+	}
+}
+
+func TestController_WarmupGroupLoop_PausesOnlyAfterCompletedBatch(t *testing.T) {
+	rt := newFakeRuntime()
+	rt.access = map[string]int64{"/x": 1}
+	rt.peekMap["/x"] = Entry{Hash32: 1}
+
+	var requests atomic.Int32
+	firstRequest := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	rt.doFunc = func(req *http.Request) (*http.Response, error) {
+		if requests.Add(1) == 1 {
+			close(firstRequest)
+			<-releaseFirst
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"text/html"}},
+			Body:       io.NopCloser(strings.NewReader("updated")),
+		}, nil
+	}
+
+	stopCh := make(chan struct{})
+	var wg sync.WaitGroup
+	c := NewController(rt, make(chan struct{}, 1), stopCh, &wg, false, nil, nil, nil)
+	pause := 80 * time.Millisecond
+	done := make(chan struct{})
+	go func() {
+		c.WarmupGroupLoop(WarmRule{
+			ID:               3,
+			Match:            "/",
+			PauseBetweenRuns: pause,
+			WarmMax:          1,
+			Matches:          func(string) bool { return true },
+		})
+		close(done)
+	}()
+
+	select {
+	case <-firstRequest:
+	case <-time.After(time.Second):
+		t.Fatal("first warmup request did not start immediately")
+	}
+	time.Sleep(pause + 30*time.Millisecond)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests while first batch blocked = %d, want 1", got)
+	}
+
+	close(releaseFirst)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := c.WarmupSummaries()[3]; ok {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, ok := c.WarmupSummaries()[3]; !ok {
+		t.Fatal("first warmup summary was not published")
+	}
+	time.Sleep(pause / 2)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests during pause = %d, want 1", got)
+	}
+
+	deadline = time.Now().Add(time.Second)
+	for requests.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := requests.Load(); got < 2 {
+		t.Fatalf("next warmup did not start after pause; requests=%d", got)
+	}
+
+	close(stopCh)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("warmup loop did not stop")
+	}
+}
+
+func TestAddWarmupURLMetric_KeepsTopTenInOrder(t *testing.T) {
+	var fastest []WarmupURLMetric
+	var slowest []WarmupURLMetric
+	for i := 0; i < 1000; i++ {
+		metric := WarmupURLMetric{
+			URL:      fmt.Sprintf("/%04d", i),
+			Duration: time.Duration(1000-i) * time.Millisecond,
+		}
+		fastest = addWarmupURLMetric(fastest, metric, true)
+		slowest = addWarmupURLMetric(slowest, metric, false)
+		if len(fastest) > maxRankedURLs || cap(fastest) > maxRankedURLs {
+			t.Fatalf("fastest retained more than %d entries: len=%d cap=%d", maxRankedURLs, len(fastest), cap(fastest))
+		}
+		if len(slowest) > maxRankedURLs || cap(slowest) > maxRankedURLs {
+			t.Fatalf("slowest retained more than %d entries: len=%d cap=%d", maxRankedURLs, len(slowest), cap(slowest))
+		}
+	}
+
+	if len(fastest) != 10 || len(slowest) != 10 {
+		t.Fatalf("ranking lengths: fastest=%d slowest=%d", len(fastest), len(slowest))
+	}
+	if fastest[0].Duration != time.Millisecond || fastest[9].Duration != 10*time.Millisecond {
+		t.Fatalf("fastest ranking = %v", fastest)
+	}
+	if slowest[0].Duration != 1000*time.Millisecond || slowest[9].Duration != 991*time.Millisecond {
+		t.Fatalf("slowest ranking = %v", slowest)
+	}
+}
+
+func TestStoreWarmupSummary_ReplacesPreviousLoop(t *testing.T) {
+	var wg sync.WaitGroup
+	c := NewController(newFakeRuntime(), make(chan struct{}, 1), make(chan struct{}), &wg, false, nil, nil, nil)
+
+	for i := 0; i < 1000; i++ {
+		url := fmt.Sprintf("/loop-%d", i)
+		c.storeWarmupSummary(WarmupSummary{
+			RuleID:     4,
+			URLs:       i,
+			FinishedAt: time.Unix(int64(i), 0),
+			TopSlowest: []WarmupURLMetric{{URL: url, Duration: time.Duration(i) * time.Millisecond}},
+			TopFastest: []WarmupURLMetric{{URL: url, Duration: time.Duration(i) * time.Millisecond}},
+		})
+		if got := len(c.warmupSummaries); got != 1 {
+			t.Fatalf("stored summaries after loop %d = %d, want 1", i, got)
+		}
+	}
+
+	summaries := c.WarmupSummaries()
+	if len(summaries) != 1 {
+		t.Fatalf("summaries = %v", summaries)
+	}
+	got := summaries[4]
+	if got.URLs != 999 || len(got.TopSlowest) != 1 || got.TopSlowest[0].URL != "/loop-999" {
+		t.Fatalf("previous loop was retained: %+v", got)
 	}
 }

@@ -64,6 +64,8 @@ ci-check: lint test test-race coverage build ## Run full local quality gate
 
 ##@ Development
 dev: ## Run wait0 with debug config
+	WAIT0_DASHBOARD_USERNAME=admin \
+	WAIT0_DASHBOARD_PASSWORD=admin \
 	$(GO) run $(CMD_PACKAGE) -config ./debug/wait0.yaml
 
 clean: ## Remove build and coverage artifacts
@@ -84,6 +86,8 @@ docker-run: ## Run container with debug config and local data volume
 	$(DOCKER) run -d --rm \
 		--name $(CONTAINER_NAME) \
 		-p 8082:8082 \
+		-e WAIT0_DASHBOARD_USERNAME=admin \
+		-e WAIT0_DASHBOARD_PASSWORD=admin \
 		-v "$(CURDIR)/debug/wait0.yaml:/wait0.yaml:ro" \
 		-v "$(CURDIR)/.wait0-data:/data" \
 		$(DOCKER_IMAGE):$(DOCKER_TAG)

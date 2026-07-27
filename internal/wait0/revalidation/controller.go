@@ -13,6 +13,8 @@ import (
 	"wait0/internal/wait0/proxy"
 )
 
+const maxRankedURLs = 10
+
 type Logger interface {
 	Printf(format string, v ...any)
 }
@@ -44,18 +46,22 @@ type Controller struct {
 	errorLog     Logger
 
 	observeDuration func(time.Duration)
+
+	warmupMu        sync.RWMutex
+	warmupSummaries map[int]WarmupSummary
 }
 
 func NewController(rt Runtime, bgSem chan struct{}, stopCh <-chan struct{}, wg *sync.WaitGroup, logWarmUp bool, summaryLog Logger, unchangedLog Logger, errorLog Logger) *Controller {
 	return &Controller{
-		rt:           rt,
-		bgSem:        bgSem,
-		stopCh:       stopCh,
-		wg:           wg,
-		logWarmUp:    logWarmUp,
-		summaryLog:   summaryLog,
-		unchangedLog: unchangedLog,
-		errorLog:     errorLog,
+		rt:              rt,
+		bgSem:           bgSem,
+		stopCh:          stopCh,
+		wg:              wg,
+		logWarmUp:       logWarmUp,
+		summaryLog:      summaryLog,
+		unchangedLog:    unchangedLog,
+		errorLog:        errorLog,
+		warmupSummaries: make(map[int]WarmupSummary),
 	}
 }
 
@@ -124,7 +130,13 @@ func (c *Controller) Once(ctx context.Context, key, path, query, by string) Resu
 		return Result{OK: false, Changed: false, Dur: time.Since(start), URI: uri, Path: path, Kind: "error", Err: err.Error()}
 	}
 
-	res := Result{OK: true, Changed: false, Dur: time.Since(start), URI: uri, Path: path}
+	res := Result{
+		OK:      true,
+		Changed: false,
+		Dur:     time.Since(start),
+		URI:     uri,
+		Path:    path,
+	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if hasCur {
@@ -190,93 +202,66 @@ func (c *Controller) Once(ctx context.Context, key, path, query, by string) Resu
 }
 
 func (c *Controller) WarmupGroupLoop(rule WarmRule) {
-	if rule.WarmMax <= 0 {
+	if rule.WarmMax <= 0 || rule.PauseBetweenRuns <= 0 {
 		return
 	}
 
-	sem := make(chan struct{}, rule.WarmMax)
-	results := make(chan Result, rule.WarmMax*4)
-
-	queued := make(map[string]struct{})
-	queue := make([]string, 0, 1024)
-
-	var inflight int
-	var batchStart time.Time
-	var urls int
-	var minRT, maxRT, sumRT time.Duration
-	var unchanged, updated, deleted, ignoredStatus, ignoredCacheControl, ignoredContentType, errors int
-
-	resetBatch := func() {
-		batchStart = time.Time{}
-		urls = 0
-		minRT, maxRT, sumRT = 0, 0, 0
-		unchanged, updated, deleted, ignoredStatus, ignoredCacheControl, ignoredContentType, errors = 0, 0, 0, 0, 0, 0, 0
-	}
-
-	makeSummary := func() WarmupSummary {
-		took := time.Since(batchStart)
-		if batchStart.IsZero() {
-			took = 0
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		default:
 		}
-		var rps float64
-		if took > 0 {
-			rps = float64(urls) / took.Seconds()
-		}
-		avg := time.Duration(0)
-		if urls > 0 {
-			avg = sumRT / time.Duration(urls)
-		}
-		return WarmupSummary{
-			Match:               rule.Match,
-			URLs:                urls,
-			Took:                took,
-			RPS:                 rps,
-			MinRT:               minRT,
-			AvgRT:               avg,
-			MaxRT:               maxRT,
-			Unchanged:           unchanged,
-			Updated:             updated,
-			Deleted:             deleted,
-			IgnoredStatus:       ignoredStatus,
-			IgnoredCacheControl: ignoredCacheControl,
-			IgnoredContentType:  ignoredContentType,
-			Errors:              errors,
-		}
-	}
 
-	maybeFinish := func() {
-		if batchStart.IsZero() {
+		summary, completed := c.runWarmupBatch(rule)
+		if !completed {
 			return
 		}
-		if inflight != 0 || len(queue) != 0 {
+		c.storeWarmupSummary(summary)
+		c.logWarmupSummary(summary)
+
+		timer := time.NewTimer(rule.PauseBetweenRuns)
+		select {
+		case <-c.stopCh:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 			return
+		case <-timer.C:
 		}
-		if c.logWarmUp && c.summaryLog != nil {
-			sum := makeSummary()
-			c.summaryLog.Printf(
-				"Revalidated for match %q: %d URLs (unchanged=%d updated=%d deleted=%d ignoredStatus=%d ignoredCC=%d ignoredContentType=%d errors=%d updated+errors=%d), Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
-				sum.Match, sum.URLs,
-				sum.Unchanged, sum.Updated, sum.Deleted, sum.IgnoredStatus, sum.IgnoredCacheControl, sum.IgnoredContentType, sum.Errors, sum.Updated+sum.Errors,
-				sum.Took.Truncate(time.Millisecond), sum.RPS,
-				sum.MinRT.Truncate(time.Millisecond), sum.AvgRT.Truncate(time.Millisecond), sum.MaxRT.Truncate(time.Millisecond),
-			)
-		}
-		resetBatch()
 	}
+}
+
+func (c *Controller) runWarmupBatch(rule WarmRule) (WarmupSummary, bool) {
+	start := time.Now()
+	summary := WarmupSummary{RuleID: rule.ID, Match: rule.Match}
+	keys := c.KeysByLastAccessDesc(rule)
+	if len(keys) == 0 {
+		summary.FinishedAt = time.Now().UTC()
+		summary.Took = summary.FinishedAt.Sub(start)
+		return summary, true
+	}
+
+	batchCtx, cancelBatch := context.WithCancel(context.Background())
+	defer cancelBatch()
+
+	results := make(chan Result, rule.WarmMax)
+	next := 0
+	inflight := 0
+	stopping := false
+	stopCh := c.stopCh
+	sumRT := time.Duration(0)
 
 	dispatch := func() {
-		for inflight < rule.WarmMax && len(queue) > 0 {
-			key := queue[0]
-			queue = queue[1:]
-			delete(queued, key)
-
+		for !stopping && inflight < rule.WarmMax && next < len(keys) {
+			key := keys[next]
+			next++
 			inflight++
-			sem <- struct{}{}
-			c.wg.Add(1)
 			go func(k string) {
-				defer c.wg.Done()
-				defer func() { <-sem }()
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				ctx, cancel := context.WithTimeout(batchCtx, 30*time.Second)
 				defer cancel()
 				path, query := proxy.SplitCacheKey(k)
 				results <- c.Once(ctx, k, path, query, "warmup")
@@ -284,101 +269,148 @@ func (c *Controller) WarmupGroupLoop(rule WarmRule) {
 		}
 	}
 
-	refresh := func() {
-		keys := c.KeysByLastAccessDesc(rule)
-		if len(keys) == 0 {
-			return
-		}
-		if batchStart.IsZero() {
-			batchStart = time.Now()
-		}
-		for _, k := range keys {
-			if _, ok := queued[k]; ok {
-				continue
-			}
-			queued[k] = struct{}{}
-			queue = append(queue, k)
-		}
-	}
-
-	t := time.NewTicker(rule.WarmEvery)
-	defer t.Stop()
-
-	stopping := false
-	stopCh := c.stopCh
-
-	for {
-		if stopping && inflight == 0 {
-			if !batchStart.IsZero() && c.logWarmUp && c.summaryLog != nil {
-				sum := makeSummary()
-				c.summaryLog.Printf(
-					"Revalidated for match %q: %d URLs (unchanged=%d updated=%d deleted=%d ignoredStatus=%d ignoredCC=%d ignoredContentType=%d errors=%d updated+errors=%d), Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
-					sum.Match, sum.URLs,
-					sum.Unchanged, sum.Updated, sum.Deleted, sum.IgnoredStatus, sum.IgnoredCacheControl, sum.IgnoredContentType, sum.Errors, sum.Updated+sum.Errors,
-					sum.Took.Truncate(time.Millisecond), sum.RPS,
-					sum.MinRT.Truncate(time.Millisecond), sum.AvgRT.Truncate(time.Millisecond), sum.MaxRT.Truncate(time.Millisecond),
-				)
-			}
-			return
-		}
-
+	dispatch()
+	for inflight > 0 {
 		select {
 		case <-stopCh:
 			stopping = true
 			stopCh = nil
-			t.Stop()
-			for k := range queued {
-				delete(queued, k)
-			}
-			queue = queue[:0]
-		case <-t.C:
-			if stopping {
-				continue
-			}
-			refresh()
-			dispatch()
+			cancelBatch()
 		case res := <-results:
 			inflight--
-			if !batchStart.IsZero() {
-				urls++
-				sumRT += res.Dur
-				if minRT == 0 || res.Dur < minRT {
-					minRT = res.Dur
-				}
-				if res.Dur > maxRT {
-					maxRT = res.Dur
-				}
-				switch res.Kind {
-				case "unchanged":
-					unchanged++
-				case "updated":
-					updated++
-				case "deleted":
-					deleted++
-				case "ignored-status":
-					ignoredStatus++
-				case "ignored-cache-control":
-					ignoredCacheControl++
-				case "ignored-content-type":
-					ignoredContentType++
-				case "error":
-					errors++
-					if c.errorLog != nil {
-						c.errorLog.Printf("Revalidate error: path=%q uri=%q err=%q", res.Path, res.URI, res.Err)
-					}
-				default:
-					errors++
-					if c.errorLog != nil {
-						c.errorLog.Printf("Revalidate error: path=%q uri=%q err=%q", res.Path, res.URI, "unknown-kind")
-					}
-				}
+			summary.URLs++
+			sumRT += res.Dur
+			if summary.MinRT == 0 || res.Dur < summary.MinRT {
+				summary.MinRT = res.Dur
 			}
-			if !stopping {
-				dispatch()
-				maybeFinish()
+			if res.Dur > summary.MaxRT {
+				summary.MaxRT = res.Dur
 			}
+			metric := WarmupURLMetric{URL: res.URI, Duration: res.Dur}
+			summary.TopSlowest = addWarmupURLMetric(summary.TopSlowest, metric, false)
+			summary.TopFastest = addWarmupURLMetric(summary.TopFastest, metric, true)
+			c.countWarmupResult(&summary, res)
+			dispatch()
 		}
 	}
+
+	if stopping || next < len(keys) {
+		return WarmupSummary{}, false
+	}
+
+	summary.FinishedAt = time.Now().UTC()
+	summary.Took = summary.FinishedAt.Sub(start)
+	if summary.URLs > 0 {
+		summary.AvgRT = sumRT / time.Duration(summary.URLs)
+	}
+	if summary.Took > 0 {
+		summary.RPS = float64(summary.URLs) / summary.Took.Seconds()
+	}
+	return summary, true
+}
+
+func (c *Controller) countWarmupResult(summary *WarmupSummary, res Result) {
+	switch res.Kind {
+	case "unchanged":
+		summary.Unchanged++
+	case "updated":
+		summary.Updated++
+	case "deleted":
+		summary.Deleted++
+	case "ignored-status":
+		summary.IgnoredStatus++
+	case "ignored-cache-control":
+		summary.IgnoredCacheControl++
+	case "ignored-content-type":
+		summary.IgnoredContentType++
+	case "error":
+		summary.Errors++
+		if c.errorLog != nil {
+			c.errorLog.Printf("Revalidate error: path=%q uri=%q err=%q", res.Path, res.URI, res.Err)
+		}
+	default:
+		summary.Errors++
+		if c.errorLog != nil {
+			c.errorLog.Printf("Revalidate error: path=%q uri=%q err=%q", res.Path, res.URI, "unknown-kind")
+		}
+	}
+}
+
+func addWarmupURLMetric(items []WarmupURLMetric, item WarmupURLMetric, fastest bool) []WarmupURLMetric {
+	if len(items) == maxRankedURLs && !warmupMetricRanksBefore(item, items[len(items)-1], fastest) {
+		return items
+	}
+	if len(items) < maxRankedURLs {
+		items = append(items, item)
+	} else {
+		// Replace the previous last-place entry so an eleventh URL is never retained.
+		items[len(items)-1] = item
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return warmupMetricRanksBefore(items[i], items[j], fastest)
+	})
+	return items[:len(items):len(items)]
+}
+
+func warmupMetricRanksBefore(a, b WarmupURLMetric, fastest bool) bool {
+	if a.Duration == b.Duration {
+		return a.URL < b.URL
+	}
+	if fastest {
+		return a.Duration < b.Duration
+	}
+	return a.Duration > b.Duration
+}
+
+func (c *Controller) storeWarmupSummary(summary WarmupSummary) {
+	latest := cloneWarmupSummary(summary)
+	c.warmupMu.Lock()
+	// Keep one slot per rule. Deleting first eagerly releases the previous loop's
+	// ranked URL strings before installing the latest completed loop.
+	delete(c.warmupSummaries, summary.RuleID)
+	c.warmupSummaries[summary.RuleID] = latest
+	c.warmupMu.Unlock()
+}
+
+func (c *Controller) WarmupSummaries() map[int]WarmupSummary {
+	c.warmupMu.RLock()
+	defer c.warmupMu.RUnlock()
+	out := make(map[int]WarmupSummary, len(c.warmupSummaries))
+	for id, summary := range c.warmupSummaries {
+		out[id] = cloneWarmupSummary(summary)
+	}
+	return out
+}
+
+func cloneWarmupSummary(summary WarmupSummary) WarmupSummary {
+	summary.TopSlowest = cloneWarmupURLMetrics(summary.TopSlowest)
+	summary.TopFastest = cloneWarmupURLMetrics(summary.TopFastest)
+	return summary
+}
+
+func cloneWarmupURLMetrics(items []WarmupURLMetric) []WarmupURLMetric {
+	if len(items) > maxRankedURLs {
+		items = items[:maxRankedURLs]
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]WarmupURLMetric, len(items))
+	copy(out, items)
+	return out
+}
+
+func (c *Controller) logWarmupSummary(sum WarmupSummary) {
+	if !c.logWarmUp || c.summaryLog == nil {
+		return
+	}
+	c.summaryLog.Printf(
+		"Revalidated for match %q: %d URLs (unchanged=%d updated=%d deleted=%d ignoredStatus=%d ignoredCC=%d ignoredContentType=%d errors=%d updated+errors=%d), Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
+		sum.Match, sum.URLs,
+		sum.Unchanged, sum.Updated, sum.Deleted, sum.IgnoredStatus, sum.IgnoredCacheControl, sum.IgnoredContentType, sum.Errors, sum.Updated+sum.Errors,
+		sum.Took.Truncate(time.Millisecond), sum.RPS,
+		sum.MinRT.Truncate(time.Millisecond), sum.AvgRT.Truncate(time.Millisecond), sum.MaxRT.Truncate(time.Millisecond),
+	)
 }
 
 func (c *Controller) KeysByLastAccessDesc(rule WarmRule) []string {

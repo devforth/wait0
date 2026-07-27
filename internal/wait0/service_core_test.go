@@ -45,7 +45,7 @@ func TestNewService_Close_Handler(t *testing.T) {
 
 func TestStartWarmupGroups_StopsOnClose(t *testing.T) {
 	rule := mustRule(t, "PathPrefix(/)")
-	rule.warmEvery = time.Millisecond
+	rule.warmPause = time.Millisecond
 	rule.warmMax = 1
 
 	s := newTestService(t, "http://invalid.local", []Rule{rule})

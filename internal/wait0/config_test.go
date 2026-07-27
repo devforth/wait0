@@ -1,6 +1,8 @@
 package wait0
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,7 +38,7 @@ rules:
     varyByQueryParams: [" page ", "lang", "page"]
     expiration: "30s"
     warmUp:
-      runEvery: "1m"
+      pauseBetweenRuns: "1m"
       maxRequestsAtATime: 3
 `
 	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
@@ -90,8 +92,46 @@ rules:
 			t.Fatalf("default cachableContentType[%d] = %q, want %q", i, got, want)
 		}
 	}
-	if cfg.Rules[0].warmEvery != time.Minute || cfg.Rules[0].warmMax != 3 {
+	if cfg.Rules[0].warmPause != time.Minute || cfg.Rules[0].warmMax != 3 {
 		t.Fatalf("warmup compiled fields not set")
+	}
+}
+
+func TestLoadConfig_LegacyRunEveryWarnsAndMapsToPause(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "wait0.yaml")
+	yaml := `storage:
+  ram: {max: "1m"}
+  disk: {max: "1m"}
+server:
+  origin: "http://x"
+rules:
+  - match: "PathPrefix(/)"
+    warmUp:
+      runEvery: "10s"
+      maxRequestsAtATime: 2
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var warning bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&warning)
+	defer log.SetOutput(previousOutput)
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := cfg.Rules[0].warmPause; got != 10*time.Second {
+		t.Fatalf("warmPause = %s, want 10s", got)
+	}
+	if got := cfg.Rules[0].WarmUp.PauseBetweenRuns; got != "10s" {
+		t.Fatalf("PauseBetweenRuns = %q, want 10s", got)
+	}
+	logged := warning.String()
+	if !strings.Contains(logged, "runEvery is deprecated") || !strings.Contains(logged, "waits this duration after a full loop finishes") {
+		t.Fatalf("warning = %q", logged)
 	}
 }
 
@@ -104,7 +144,8 @@ func TestLoadConfig_Errors(t *testing.T) {
 		{name: "bad match", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"BadExpr(/)\"\n"},
 		{name: "bad varyByQueryParams", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    varyByQueryParams: [\"page\", \" \" ]\n"},
 		{name: "bad cachableContentType", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    cachableContentType: [\"not a content type\"]\n"},
-		{name: "bad warmup", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    warmUp:\n      runEvery: \"\"\n      maxRequestsAtATime: 1\n"},
+		{name: "bad warmup", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    warmUp:\n      pauseBetweenRuns: \"\"\n      maxRequestsAtATime: 1\n"},
+		{name: "both warmup intervals", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    warmUp:\n      pauseBetweenRuns: \"10s\"\n      runEvery: \"10s\"\n      maxRequestsAtATime: 1\n"},
 		{name: "bad log stats", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nlogging:\n  log_stats_every: \"bad\"\nrules: []\n"},
 		{name: "duplicate auth token ids", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\n  invalidation:\n    enabled: true\nauth:\n  tokens:\n    - id: \"dup\"\n      token: \"a\"\n      scopes: [\"invalidation:write\"]\n    - id: \"dup\"\n      token: \"b\"\n      scopes: [\"invalidation:write\"]\nrules: []\n"},
 		{name: "invalidation enabled without auth scope", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\n  invalidation:\n    enabled: true\nauth:\n  tokens:\n    - id: \"x\"\n      token: \"t\"\n      scopes: [\"other:scope\"]\nrules: []\n"},
@@ -161,6 +202,22 @@ rules: []
 	}
 	if got := cfg.Auth.Tokens[0].Token; got != "from-env-token" {
 		t.Fatalf("token = %q, want from-env-token", got)
+	}
+}
+
+func TestLoadConfig_DebugConfigHasFixedLocalAuthToken(t *testing.T) {
+	t.Setenv("WAIT0_API_AUTH_TOKEN", "must-not-override-debug-config")
+
+	cfgPath := filepath.Join("..", "..", "debug", "wait0.yaml")
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig(%q): %v", cfgPath, err)
+	}
+	if len(cfg.Auth.Tokens) != 1 {
+		t.Fatalf("auth token count = %d, want 1", len(cfg.Auth.Tokens))
+	}
+	if got := cfg.Auth.Tokens[0].Token; got != "demotoken" {
+		t.Fatalf("debug auth token = %q, want demotoken", got)
 	}
 }
 

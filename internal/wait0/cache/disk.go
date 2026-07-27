@@ -95,6 +95,7 @@ func (d *Disk) MetaSnapshot() map[string]EntryMeta {
 		}
 		out[k] = EntryMeta{
 			Size:                size,
+			StorageSize:         m.Size,
 			Inactive:            m.Inactive,
 			DiscoveredBy:        m.DiscoveredBy,
 			LastRefreshUnixNano: lastRefresh,

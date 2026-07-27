@@ -281,20 +281,21 @@ func resolveAuthTokenByScope(tokens []AuthTokenConfig, scope string) (id, token 
 func (s *Service) startWarmupGroups() {
 	for i := range s.cfg.Rules {
 		r := &s.cfg.Rules[i]
-		if r.warmEvery <= 0 || r.warmMax <= 0 {
+		if r.warmPause <= 0 || r.warmMax <= 0 {
 			continue
 		}
-		log.Printf("warmup group start: match=%q, runEvery=%s, maxRequestsAtATime=%d", r.Match, r.warmEvery, r.warmMax)
+		log.Printf("warmup group start: match=%q, pauseBetweenRuns=%s, maxRequestsAtATime=%d", r.Match, r.warmPause, r.warmMax)
 		s.wg.Add(1)
-		go func(rule *Rule) {
+		go func(ruleID int, rule *Rule) {
 			defer s.wg.Done()
 			s.reval.WarmupGroupLoop(revalidation.WarmRule{
-				Match:     rule.Match,
-				WarmEvery: rule.warmEvery,
-				WarmMax:   rule.warmMax,
-				Matches:   rule.Matches,
+				ID:               ruleID,
+				Match:            rule.Match,
+				PauseBetweenRuns: rule.warmPause,
+				WarmMax:          rule.warmMax,
+				Matches:          rule.Matches,
 			})
-		}(r)
+		}(i, r)
 	}
 }
 

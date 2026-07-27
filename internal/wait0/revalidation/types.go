@@ -33,20 +33,28 @@ type Result struct {
 }
 
 type WarmRule struct {
-	Match     string
-	WarmEvery time.Duration
-	WarmMax   int
-	Matches   func(path string) bool
+	ID               int
+	Match            string
+	PauseBetweenRuns time.Duration
+	WarmMax          int
+	Matches          func(path string) bool
+}
+
+type WarmupURLMetric struct {
+	URL      string
+	Duration time.Duration
 }
 
 type WarmupSummary struct {
-	Match string
-	URLs  int
-	Took  time.Duration
-	RPS   float64
-	MinRT time.Duration
-	AvgRT time.Duration
-	MaxRT time.Duration
+	RuleID     int
+	Match      string
+	URLs       int
+	Took       time.Duration
+	FinishedAt time.Time
+	RPS        float64
+	MinRT      time.Duration
+	AvgRT      time.Duration
+	MaxRT      time.Duration
 
 	Unchanged           int
 	Updated             int
@@ -55,4 +63,7 @@ type WarmupSummary struct {
 	IgnoredCacheControl int
 	IgnoredContentType  int
 	Errors              int
+
+	TopSlowest []WarmupURLMetric
+	TopFastest []WarmupURLMetric
 }

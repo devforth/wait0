@@ -18,11 +18,20 @@ Developer guide for building, running, testing, and operating `wait0`.
 make dev
 ```
 
+The development setup uses fixed local-only credentials:
+
+- API bearer token: `demotoken`
+- Dashboard Basic Auth: `admin` / `admin`
+
+Never use the debug configuration in production.
+
 Equivalent direct command:
 
 ```bash
 go run ./cmd/wait0 -config ./debug/wait0.yaml
 ```
+
+The direct command uses the same `demotoken` API credential. The dashboard is enabled automatically by `make dev`; when using the direct command, set both dashboard credential environment variables to `admin`.
 
 ### Build binary
 
@@ -131,7 +140,8 @@ For dashboard:
 | `cachableContentType[]` | no | Exact cache-eligible media types; defaults to `text/html` and `application/xhtml+xml`; parameters are ignored |
 | `varyByQueryParams[]` | no | Query params that should participate in cache identity for matching paths |
 | `expiration` | no | Duration for stale check and async revalidation |
-| `warmUp.runEvery` | with `warmUp` | Duration, must be `> 0` |
+| `warmUp.pauseBetweenRuns` | with `warmUp` | Pause after a complete loop before loading the next URL snapshot; must be `> 0`; `10s` is recommended for fast full-capacity reruns |
+| `warmUp.runEvery` | deprecated | Legacy alias for `pauseBetweenRuns`; logs a replacement warning and uses the new pause-after-completion behavior |
 | `warmUp.maxRequestsAtATime` | with `warmUp` | Must be `> 0` |
 
 ## `urlsDiscover`
@@ -161,8 +171,9 @@ For dashboard:
 - Bypassed and non-`GET` requests are sent upstream as `GET` without the original body.
 - Non-2xx origin responses are not cached and existing cached key is removed.
 - Origin responses whose media type is not in `cachableContentType` are served but not stored; background revalidation deletes an existing entry if its new media type is disallowed.
-- We recommend to Keep static assets in CDN, Nginx, and browser caches; wait0 defaults to caching only dynamic HTML/XHTML SWR responses.
+- Keep static assets in CDN, Nginx, and browser caches; wait0 defaults to caching only dynamic HTML/XHTML SWR responses.
 - Origin `2xx` responses with `Cache-Control: no-cache` or `no-store` are not stored; either directive received during revalidation deletes the existing entry.
+- Warmup loops never overlap: wait0 completes the current rule snapshot, waits `pauseBetweenRuns`, then loads a fresh snapshot.
 - `X-Wait0` response header identifies behavior (`hit`, `miss`, `bypass`, `ignore-by-cookie`, `ignore-by-status`, `bad-gateway`).
 - `X-Wait0-Reason` identifies why a response was bypassed or failed (for example, `bypass-rule` or `non-cacheable-content-type`).
 

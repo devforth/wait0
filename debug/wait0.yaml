@@ -6,7 +6,7 @@ storage:
 
 server:
   port: 8082
-  origin: http://host.docker.internal:8080
+  origin: https://devforth.io/
   invalidation:
     enabled: true
     queue_size: 64
@@ -22,8 +22,9 @@ auth:
     # - GET /wait0/dashboard/stats (stats:read)
     # - POST /wait0/dashboard/invalidate (invalidation:write)
     - id: local-backoffice
-      # token: debug-token
-      token_env: WAIT0_API_AUTH_TOKEN
+      # Fixed local-development credential. Never use this config in production.
+      token: demotoken
+      # token_env: WAIT0_API_AUTH_TOKEN
       scopes:
         - invalidation:write
         - stats:read
@@ -44,7 +45,7 @@ rules:
       - sessionid
     expiration: '10s'
     warmUp:
-      runEvery: '10s'
+      pauseBetweenRuns: '10s'
       maxRequestsAtATime: 1000
 
 logging:

@@ -156,6 +156,7 @@ func (c *RAM) MetaSnapshot() map[string]EntryMeta {
 		}
 		out[k] = EntryMeta{
 			Size:                it.statsSize,
+			StorageSize:         it.size,
 			Inactive:            it.ent.Inactive,
 			DiscoveredBy:        it.ent.DiscoveredBy,
 			LastRefreshUnixNano: lastRefresh,

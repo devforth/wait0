@@ -163,6 +163,10 @@ With this setting, `/blog?page=1` and `/blog?page=2` are different cache entries
 
 `urlsDiscover` reads sitemap files and registers their paths in the disk cache. It supports sitemap indexes, gzip sitemaps, absolute URLs, and origin-relative paths. Discovery does not fetch each page body by itself: add `warmUp` to a matching rule to fetch and periodically refresh the discovered paths. Paths with no matching rule, or a rule with `bypass: true`, are ignored.
 
+Each warmup rule starts its first loop immediately and processes one complete URL snapshot at up to `maxRequestsAtATime` concurrency. After the full loop finishes, wait0 pauses for `pauseBetweenRuns`, then takes a fresh snapshot and runs again. A value such as `10s` is recommended when you want warmup to restart quickly at full capacity without overlapping loops.
+
+Dashboard statistics retain only the latest completed warmup loop per rule. Fastest, slowest, largest, and smallest URL rankings are capped at 10 entries while they are collected, so wait0 does not accumulate warmup history or discarded ranking candidates.
+
 ### Config file reference
 
 This example contains every current configuration option. Durations use Go syntax such as `10s`, `1m`, or `2h`; sizes accept bytes or `k`, `m`, and `g` suffixes.
@@ -239,8 +243,8 @@ rules:
     # omit to disable request-triggered age refresh.
     expiration: '1m'
     warmUp:
-      # Refresh all known matching paths at this interval, regardless of age.
-      runEvery: '10m'
+      # After a full loop completes, pause before loading the next URL snapshot.
+      pauseBetweenRuns: '10s'
       # Maximum concurrent requests for this warmup rule.
       maxRequestsAtATime: 20
 
@@ -253,7 +257,7 @@ logging:
   log_url_autodiscover: true
 ```
 
-Compatibility-only options are still accepted but should not be used in new files: `urlsDiscover.initalDelay` is the old spelling of `initialDelay`, `logging.log_revalidation_every` is replaced by `log_warmup`, and `server.invalidation.tokens` is replaced by top-level `auth.tokens`.
+Compatibility-only options are still accepted but should not be used in new files: `urlsDiscover.initalDelay` is the old spelling of `initialDelay`, `logging.log_revalidation_every` is replaced by `log_warmup`, `server.invalidation.tokens` is replaced by top-level `auth.tokens`, and `warmUp.runEvery` is replaced by `warmUp.pauseBetweenRuns`. Legacy `runEvery` logs a warning and now uses pause-after-completion semantics.
 
 ## Redeploy Note
 
