@@ -37,6 +37,7 @@ type Service struct {
 	errorLog     *wstats.RateLimitedLogger
 
 	sendRevalidateMarkers bool
+	debugHeaders          proxy.DebugHeaderSet
 
 	stats *wstats.Collector
 
@@ -117,6 +118,7 @@ func NewService(cfg Config) (*Service, error) {
 		unchangedLog:          wstats.NewRateLimitedLogger(10 * time.Second),
 		errorLog:              wstats.NewRateLimitedLogger(10 * time.Second),
 		sendRevalidateMarkers: envBool("WAIT0_SEND_REVALIDATE_MARKERS", true),
+		debugHeaders:          proxy.NewDebugHeaderSet(cfg.Logging.DebugHeaders),
 		stats:                 wstats.NewCollector(),
 	}
 

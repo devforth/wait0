@@ -49,6 +49,18 @@ rules:
       maxRequestsAtATime: 1000
 
 logging:
+  # Diagnostic response headers and origin revalidation markers.
+  # Omit debug_headers to enable all supported headers by default.
+  debug_headers:
+    - X-Wait0
+    - X-Wait0-Reason
+    - X-Wait0-Revalidated-At
+    - X-Wait0-Revalidated-By
+    - X-Wait0-Discovered-By
+    - X-Wait0-Revalidate-At
+    - X-Wait0-Revalidate-Entropy
+  # To disable every diagnostic header, replace the list above with:
+  # debug_headers: []
   # log stats when enabled logs
   log_stats_every: '10s'
   log_warmup: true

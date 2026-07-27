@@ -86,6 +86,10 @@ func (a *revalidationRuntimeAdapter) SendRevalidateMarkers() bool {
 	return a.s.sendRevalidateMarkers
 }
 
+func (a *revalidationRuntimeAdapter) DebugHeaderEnabled(name string) bool {
+	return a.s.debugHeaders.Enabled(name)
+}
+
 func (a *revalidationRuntimeAdapter) RandomString(n int) string {
 	return randomString(n)
 }

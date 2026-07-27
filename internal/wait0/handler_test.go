@@ -45,6 +45,33 @@ func TestHandle_CacheMissThenHit(t *testing.T) {
 	}
 }
 
+func TestHandle_ExplicitEmptyDebugHeadersEmitsNone(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		for _, name := range proxy.DefaultDebugHeaders() {
+			w.Header().Set(name, "origin-spoof")
+		}
+		fmt.Fprint(w, "ok")
+	}))
+	defer origin.Close()
+
+	rule := mustRule(t, "PathPrefix(/)")
+	s := newTestService(t, origin.URL, []Rule{rule})
+	s.debugHeaders = proxy.NewDebugHeaderSet([]string{})
+
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "http://wait0.local/page", nil))
+
+	if got := w.Result().StatusCode; got != http.StatusOK {
+		t.Fatalf("status = %d, want 200", got)
+	}
+	for _, name := range proxy.DefaultDebugHeaders() {
+		if got := w.Result().Header.Get(name); got != "" {
+			t.Fatalf("disabled debug header %s = %q", name, got)
+		}
+	}
+}
+
 func TestHandle_NonCachableContentTypeByDefault(t *testing.T) {
 	var hits atomic.Int32
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

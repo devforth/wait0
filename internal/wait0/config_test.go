@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"wait0/internal/wait0/proxy"
 )
 
 func TestLoadConfig_ValidAndCompiledFields(t *testing.T) {
@@ -55,6 +57,9 @@ rules:
 	}
 	if cfg.Logging.logStatsEveryDur != 10*time.Second {
 		t.Fatalf("logStatsEveryDur = %s", cfg.Logging.logStatsEveryDur)
+	}
+	if got, want := cfg.Logging.DebugHeaders, proxy.DefaultDebugHeaders(); !slicesEqual(got, want) {
+		t.Fatalf("default debug_headers = %v, want %v", got, want)
 	}
 	if cfg.URLsDiscover.initialDelayDur != 2*time.Second {
 		t.Fatalf("initialDelayDur = %s", cfg.URLsDiscover.initialDelayDur)
@@ -147,6 +152,7 @@ func TestLoadConfig_Errors(t *testing.T) {
 		{name: "bad warmup", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    warmUp:\n      pauseBetweenRuns: \"\"\n      maxRequestsAtATime: 1\n"},
 		{name: "both warmup intervals", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    warmUp:\n      pauseBetweenRuns: \"10s\"\n      runEvery: \"10s\"\n      maxRequestsAtATime: 1\n"},
 		{name: "bad log stats", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nlogging:\n  log_stats_every: \"bad\"\nrules: []\n"},
+		{name: "bad debug header", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nlogging:\n  debug_headers: [\"X-Wait0-Unknown\"]\nrules: []\n"},
 		{name: "duplicate auth token ids", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\n  invalidation:\n    enabled: true\nauth:\n  tokens:\n    - id: \"dup\"\n      token: \"a\"\n      scopes: [\"invalidation:write\"]\n    - id: \"dup\"\n      token: \"b\"\n      scopes: [\"invalidation:write\"]\nrules: []\n"},
 		{name: "invalidation enabled without auth scope", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\n  invalidation:\n    enabled: true\nauth:\n  tokens:\n    - id: \"x\"\n      token: \"t\"\n      scopes: [\"other:scope\"]\nrules: []\n"},
 	}
@@ -161,6 +167,30 @@ func TestLoadConfig_Errors(t *testing.T) {
 				t.Fatalf("expected error")
 			}
 		})
+	}
+}
+
+func TestLoadConfig_ExplicitEmptyDebugHeadersDisablesAll(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "wait0.yaml")
+	yaml := `storage:
+  ram: {max: "1m"}
+  disk: {max: "1m"}
+server:
+  origin: "http://x"
+logging:
+  debug_headers: []
+rules: []
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Logging.DebugHeaders == nil || len(cfg.Logging.DebugHeaders) != 0 {
+		t.Fatalf("debug_headers = %#v, want non-nil empty list", cfg.Logging.DebugHeaders)
 	}
 }
 
@@ -203,6 +233,18 @@ rules: []
 	if got := cfg.Auth.Tokens[0].Token; got != "from-env-token" {
 		t.Fatalf("token = %q, want from-env-token", got)
 	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestLoadConfig_DebugConfigHasFixedLocalAuthToken(t *testing.T) {

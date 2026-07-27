@@ -109,8 +109,12 @@ func (a *proxyRuntimeAdapter) RevalidateAsync(key, path, query string) {
 	a.s.reval.Async(key, path, query, "user")
 }
 
+func (a *proxyRuntimeAdapter) DebugHeaders() proxy.DebugHeaderSet {
+	return a.s.debugHeaders
+}
+
 func (a *proxyRuntimeAdapter) WriteEntryWithStats(w http.ResponseWriter, ent proxy.Entry, wait0, reason string) {
-	proxy.WriteEntry(w, ent, wait0, reason)
+	proxy.WriteEntry(w, ent, wait0, reason, a.s.debugHeaders)
 	if a.s.stats != nil {
 		switch wait0 {
 		case "hit", "miss":

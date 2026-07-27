@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"wait0/internal/wait0/proxy"
 )
 
 type fakeRuntime struct {
@@ -23,6 +25,7 @@ type fakeRuntime struct {
 	origin  string
 
 	sendMarkers  bool
+	debugHeaders proxy.DebugHeaderSet
 	random       string
 	contentTypes []string
 	doFunc       func(req *http.Request) (*http.Response, error)
@@ -105,6 +108,12 @@ func (f *fakeRuntime) SendRevalidateMarkers() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.sendMarkers
+}
+
+func (f *fakeRuntime) DebugHeaderEnabled(name string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.debugHeaders.Enabled(name)
 }
 
 func (f *fakeRuntime) RandomString(int) string {
@@ -332,6 +341,27 @@ func TestController_Once_Branches(t *testing.T) {
 				t.Fatalf("unchanged log count = %d, want 1", unchangedLog.count())
 			}
 		})
+	}
+}
+
+func TestController_Once_DebugHeadersCanDisableOriginMarkers(t *testing.T) {
+	rt := newFakeRuntime()
+	rt.sendMarkers = true
+	rt.debugHeaders = proxy.NewDebugHeaderSet([]string{})
+
+	var wg sync.WaitGroup
+	c := NewController(rt, make(chan struct{}, 1), make(chan struct{}), &wg, false, nil, nil, nil)
+	res := c.Once(context.Background(), "/page", "/page", "", "user")
+	if res.Kind != "updated" {
+		t.Fatalf("kind = %q, want updated", res.Kind)
+	}
+	if len(rt.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(rt.requests))
+	}
+	for _, name := range []string{proxy.DebugHeaderRevalidateAt, proxy.DebugHeaderRevalidateEntropy} {
+		if got := rt.requests[0].Header.Get(name); got != "" {
+			t.Fatalf("disabled origin marker %s = %q", name, got)
+		}
 	}
 }
 

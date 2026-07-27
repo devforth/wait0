@@ -15,6 +15,7 @@ type Runtime interface {
 	FetchFromOrigin(r *http.Request) (Entry, bool, string, error)
 	Store(key string, ent Entry)
 	RevalidateAsync(key, path, query string)
+	DebugHeaders() DebugHeaderSet
 	WriteEntryWithStats(w http.ResponseWriter, ent Entry, wait0, reason string)
 }
 
@@ -80,7 +81,7 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 
 	respEnt, cacheable, statusKind, err := c.rt.FetchFromOrigin(r)
 	if err != nil {
-		SetWait0Headers(w.Header(), "bad-gateway", "origin-error")
+		SetWait0Headers(w.Header(), "bad-gateway", "origin-error", c.rt.DebugHeaders())
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
@@ -110,7 +111,7 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 func (c *Controller) proxyPass(w http.ResponseWriter, r *http.Request, wait0, reason string) {
 	ent, _, _, err := c.rt.FetchFromOrigin(r)
 	if err != nil {
-		SetWait0Headers(w.Header(), "bad-gateway", "origin-error")
+		SetWait0Headers(w.Header(), "bad-gateway", "origin-error", c.rt.DebugHeaders())
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}

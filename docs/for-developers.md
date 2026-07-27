@@ -157,6 +157,7 @@ For dashboard:
 
 | Field | Type | Notes |
 |-------|------|------|
+| `debug_headers` | string array | Diagnostic headers to emit; omitted enables all seven supported headers, while an explicit `[]` disables all |
 | `log_stats_every` | duration | Enables periodic stats logging (`> 0`) |
 | `log_warmup` | bool | Emits warmup batch summaries |
 | `log_url_autodiscover` | bool | Emits per-sitemap discovery logs |
@@ -174,6 +175,8 @@ For dashboard:
 - Keep static assets in CDN, Nginx, and browser caches; wait0 defaults to caching only dynamic HTML/XHTML SWR responses.
 - Origin `2xx` responses with `Cache-Control: no-cache` or `no-store` are not stored; either directive received during revalidation deletes the existing entry.
 - Warmup loops never overlap: wait0 completes the current rule snapshot, waits `pauseBetweenRuns`, then loads a fresh snapshot.
+- `logging.debug_headers` may select any of `X-Wait0`, `X-Wait0-Reason`, `X-Wait0-Revalidated-At`, `X-Wait0-Revalidated-By`, `X-Wait0-Discovered-By`, `X-Wait0-Revalidate-At`, and `X-Wait0-Revalidate-Entropy`.
+- Omit `logging.debug_headers` to enable all diagnostics; set `debug_headers: []` to disable all of them.
 - `X-Wait0` response header identifies behavior (`hit`, `miss`, `bypass`, `ignore-by-cookie`, `ignore-by-status`, `bad-gateway`).
 - `X-Wait0-Reason` identifies why a response was bypassed or failed (for example, `bypass-rule` or `non-cacheable-content-type`).
 

@@ -50,16 +50,18 @@ An origin response is cacheable only when:
 
 `cachableContentType` defaults to `text/html` and `application/xhtml+xml`. Matching is case-insensitive and ignores media-type parameters such as `charset=utf-8`. A missing or malformed `Content-Type` is not cacheable.
 
-## Response headers added by wait0
+## Diagnostic headers added by wait0
 
 | Header | When present | Meaning |
 |--------|--------------|---------|
-| `X-Wait0` | always on handled responses | Cache/proxy decision marker |
+| `X-Wait0` | handled responses when enabled | Cache/proxy decision marker |
 | `X-Wait0-Reason` | response bypassed or failed | Machine-readable reason the response was not cached |
 | `X-Wait0-Revalidated-At` | cache `hit` with revalidation metadata | Last revalidation timestamp (RFC3339Nano) |
 | `X-Wait0-Revalidated-By` | with `X-Wait0-Revalidated-At` | Revalidation source (`user`, `warmup`, `invalidate`, etc.) |
 | `X-Wait0-Discovered-By` | if entry was discovery seeded | Discovery source marker |
 | `Access-Control-Expose-Headers` | when wait0 headers exist | Exposes wait0 headers to browser clients |
+
+During background revalidation, wait0 can also send `X-Wait0-Revalidate-At` and `X-Wait0-Revalidate-Entropy` to the origin. `logging.debug_headers` controls all seven diagnostic headers. Omission enables all; an explicit `debug_headers: []` disables all. A configured subset enables only the named headers. `WAIT0_SEND_REVALIDATE_MARKERS=false` remains a master disable for the two origin markers.
 
 ## Example
 

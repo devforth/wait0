@@ -147,6 +147,8 @@ wait0 caches only `GET` responses with a `2xx` status, an allowed `Content-Type`
 
 An origin response that fails these checks is served as `X-Wait0: bypass` without being stored, with `X-Wait0-Reason` explaining why. If background revalidation receives a disallowed content type, either cache-control directive, or a non-`2xx` status, the existing entry is deleted; a network error leaves it available. A stale response is reported as `X-Wait0: hit`.
 
+`logging.debug_headers` controls wait0 diagnostic response headers and the markers sent to the origin during revalidation. Omit it to enable every supported header, use a subset to select individual headers, or set `debug_headers: []` to disable all diagnostics. Functional headers such as `X-Wait0-CSRF` and origin-provided `X-Wait0-Tag` are not controlled by this option.
+
 ### Query parameter caching
 
 Cache keys use only the URL path by default, so `/blog`, `/blog?page=1`, and `/blog?utm_source=email` share the same cached response. The first cold request reaches the origin with its complete query and fills the shared entry; later background refreshes omit query parameters that are not in `varyByQueryParams`.
@@ -249,6 +251,18 @@ rules:
       maxRequestsAtATime: 20
 
 logging:
+  # Diagnostic response headers and origin revalidation markers. Omit this
+  # option to enable all supported headers by default.
+  debug_headers:
+    - X-Wait0
+    - X-Wait0-Reason
+    - X-Wait0-Revalidated-At
+    - X-Wait0-Revalidated-By
+    - X-Wait0-Discovered-By
+    - X-Wait0-Revalidate-At
+    - X-Wait0-Revalidate-Entropy
+  # To disable every diagnostic header, replace the list above with:
+  # debug_headers: []
   # Logs a stats snapshot at this interval; omit to disable.
   log_stats_every: '1m'
   # Logs a summary after each warmup batch.

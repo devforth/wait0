@@ -30,6 +30,7 @@ type fakeRuntime struct {
 	revalidated  []struct{ key, path, query string }
 	writeWait0   []string
 	writeReasons []string
+	debugHeaders DebugHeaderSet
 }
 
 func (f *fakeRuntime) HandleControl(http.ResponseWriter, *http.Request) bool {
@@ -56,13 +57,15 @@ func (f *fakeRuntime) RevalidateAsync(key, path, query string) {
 	f.revalidated = append(f.revalidated, struct{ key, path, query string }{key: key, path: path, query: query})
 }
 
+func (f *fakeRuntime) DebugHeaders() DebugHeaderSet { return f.debugHeaders }
+
 func (f *fakeRuntime) WriteEntryWithStats(w http.ResponseWriter, ent Entry, wait0, reason string) {
 	f.writeWait0 = append(f.writeWait0, wait0)
 	f.writeReasons = append(f.writeReasons, reason)
 	if ent.Status == 0 {
 		ent.Status = http.StatusOK
 	}
-	WriteEntry(w, ent, wait0, reason)
+	WriteEntry(w, ent, wait0, reason, f.debugHeaders)
 }
 
 func TestController_Handle_ShortCircuitsControl(t *testing.T) {
@@ -321,5 +324,26 @@ func TestController_Handle_OriginBranches(t *testing.T) {
 				t.Fatalf("body %q does not contain %q", w.Body.String(), tc.wantBodyMatch)
 			}
 		})
+	}
+}
+
+func TestController_Handle_OriginErrorWithDebugHeadersDisabled(t *testing.T) {
+	rt := &fakeRuntime{
+		originErr:    errors.New("boom"),
+		debugHeaders: NewDebugHeaderSet([]string{}),
+	}
+	c := NewController(rt)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "http://wait0.local/origin", nil)
+
+	c.Handle(w, r)
+
+	if got := w.Result().StatusCode; got != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", got, http.StatusBadGateway)
+	}
+	for _, name := range DefaultDebugHeaders() {
+		if got := w.Result().Header.Get(name); got != "" {
+			t.Fatalf("disabled header %s = %q", name, got)
+		}
 	}
 }

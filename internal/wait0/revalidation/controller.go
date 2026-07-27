@@ -29,6 +29,7 @@ type Runtime interface {
 	Do(req *http.Request) (*http.Response, error)
 	CachableContentTypes(path string) []string
 	SendRevalidateMarkers() bool
+	DebugHeaderEnabled(name string) bool
 	RandomString(n int) string
 }
 
@@ -114,8 +115,12 @@ func (c *Controller) Once(ctx context.Context, key, path, query, by string) Resu
 	}
 
 	if c.rt.SendRevalidateMarkers() {
-		req.Header.Set("X-Wait0-Revalidate-At", time.Now().UTC().Format(time.RFC3339Nano))
-		req.Header.Set("X-Wait0-Revalidate-Entropy", c.rt.RandomString(8))
+		if c.rt.DebugHeaderEnabled(proxy.DebugHeaderRevalidateAt) {
+			req.Header.Set(proxy.DebugHeaderRevalidateAt, time.Now().UTC().Format(time.RFC3339Nano))
+		}
+		if c.rt.DebugHeaderEnabled(proxy.DebugHeaderRevalidateEntropy) {
+			req.Header.Set(proxy.DebugHeaderRevalidateEntropy, c.rt.RandomString(8))
+		}
 	}
 	req.Header.Set("Accept-Encoding", "identity")
 

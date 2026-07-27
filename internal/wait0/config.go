@@ -48,6 +48,9 @@ type Config struct {
 	Logging struct {
 		LogStatsEvery    string        `yaml:"log_stats_every"`
 		logStatsEveryDur time.Duration `yaml:"-"`
+		// DebugHeaders controls wait0 diagnostic response headers and origin
+		// revalidation markers. Omitted enables all; an explicit [] disables all.
+		DebugHeaders []string `yaml:"debug_headers"`
 		// LogWarmUp prints a summary after each warmup batch drains.
 		LogWarmUp bool `yaml:"log_warmup"`
 
@@ -188,6 +191,12 @@ func LoadConfig(path string) (Config, error) {
 		}
 		cfg.Logging.logStatsEveryDur = d
 	}
+
+	debugHeaders, err := proxy.NormalizeDebugHeaders(cfg.Logging.DebugHeaders)
+	if err != nil {
+		return Config{}, fmt.Errorf("logging.debug_headers: %w", err)
+	}
+	cfg.Logging.DebugHeaders = debugHeaders
 
 	if strings.TrimSpace(cfg.Logging.LogRevalidationEvery) != "" {
 		// Backward compatible alias for the previous warmup logging setting.
