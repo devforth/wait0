@@ -59,6 +59,7 @@ func TestInvalidationRuntimeAdapter_RecrawlKey(t *testing.T) {
 	var seenQuery string
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("fresh"))
 	}))

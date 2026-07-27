@@ -74,6 +74,14 @@ func (a *revalidationRuntimeAdapter) Do(req *http.Request) (*http.Response, erro
 	return a.s.httpClient.Do(req)
 }
 
+func (a *revalidationRuntimeAdapter) CachableContentTypes(path string) []string {
+	rule := a.s.pickRule(path)
+	if rule == nil {
+		return proxy.DefaultCachableContentTypes()
+	}
+	return append([]string(nil), rule.CachableContentTypes...)
+}
+
 func (a *revalidationRuntimeAdapter) SendRevalidateMarkers() bool {
 	return a.s.sendRevalidateMarkers
 }

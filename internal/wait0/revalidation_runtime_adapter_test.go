@@ -64,6 +64,9 @@ func TestRevalidationRuntimeAdapter_SnapshotsAndHelpers(t *testing.T) {
 	if a.Origin() != "http://example.com" {
 		t.Fatalf("origin = %q", a.Origin())
 	}
+	if got := a.CachableContentTypes("/a"); len(got) != 2 || got[0] != "text/html" || got[1] != "application/xhtml+xml" {
+		t.Fatalf("default cachable content types = %v", got)
+	}
 	if !a.SendRevalidateMarkers() {
 		t.Fatalf("expected send markers true")
 	}

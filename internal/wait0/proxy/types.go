@@ -22,10 +22,11 @@ type Entry struct {
 }
 
 type Rule struct {
-	Bypass            bool
-	BypassWhenCookies []string
-	VaryByQueryParams []string
-	Expiration        time.Duration
+	Bypass               bool
+	BypassWhenCookies    []string
+	CachableContentTypes []string
+	VaryByQueryParams    []string
+	Expiration           time.Duration
 }
 
 func IsStale(ent Entry, exp time.Duration) bool {

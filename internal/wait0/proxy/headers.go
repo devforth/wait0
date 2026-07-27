@@ -6,16 +6,21 @@ import (
 	"time"
 )
 
-func WriteEntry(w http.ResponseWriter, ent Entry, wait0 string) {
+const (
+	wait0Header       = "X-Wait0"
+	wait0ReasonHeader = "X-Wait0-Reason"
+)
+
+func WriteEntry(w http.ResponseWriter, ent Entry, wait0, reason string) {
 	for k, vs := range ent.Header {
-		if strings.EqualFold(k, "x-wait0") {
+		if strings.EqualFold(k, wait0Header) || strings.EqualFold(k, wait0ReasonHeader) {
 			continue
 		}
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}
 	}
-	SetWait0Headers(w.Header(), wait0)
+	SetWait0Headers(w.Header(), wait0, reason)
 	setWait0DiscoveredHeaders(w.Header(), ent)
 	if wait0 == "hit" {
 		setWait0RevalidatedHeaders(w.Header(), ent)
@@ -24,11 +29,17 @@ func WriteEntry(w http.ResponseWriter, ent Entry, wait0 string) {
 	_, _ = w.Write(ent.Body)
 }
 
-func SetWait0Headers(h http.Header, wait0 string) {
+func SetWait0Headers(h http.Header, wait0, reason string) {
 	if wait0 != "" {
-		h.Set("X-Wait0", wait0)
+		h.Set(wait0Header, wait0)
 	}
-	ensureExposedHeader(h, "X-Wait0")
+	ensureExposedHeader(h, wait0Header)
+
+	h.Del(wait0ReasonHeader)
+	if reason != "" {
+		h.Set(wait0ReasonHeader, reason)
+		ensureExposedHeader(h, wait0ReasonHeader)
+	}
 }
 
 func setWait0RevalidatedHeaders(h http.Header, ent Entry) {

@@ -53,5 +53,6 @@ type WarmupSummary struct {
 	Deleted             int
 	IgnoredStatus       int
 	IgnoredCacheControl int
+	IgnoredContentType  int
 	Errors              int
 }

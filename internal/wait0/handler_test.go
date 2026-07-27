@@ -18,6 +18,7 @@ func TestHandle_CacheMissThenHit(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, "ok")
 	}))
 	defer origin.Close()
@@ -44,6 +45,61 @@ func TestHandle_CacheMissThenHit(t *testing.T) {
 	}
 }
 
+func TestHandle_NonCachableContentTypeByDefault(t *testing.T) {
+	var hits atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer origin.Close()
+
+	rule := mustRule(t, "PathPrefix(/)")
+	s := newTestService(t, origin.URL, []Rule{rule})
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "http://wait0.local/data", nil)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+
+		if got := w.Result().Header.Get("X-Wait0"); got != "bypass" {
+			t.Fatalf("request %d X-Wait0 = %q, want bypass", i+1, got)
+		}
+		if got := w.Result().Header.Get("X-Wait0-Reason"); got != "non-cacheable-content-type" {
+			t.Fatalf("request %d X-Wait0-Reason = %q", i+1, got)
+		}
+	}
+	if got := hits.Load(); got != 2 {
+		t.Fatalf("origin hits = %d, want 2", got)
+	}
+}
+
+func TestHandle_CustomCachableContentType(t *testing.T) {
+	var hits atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer origin.Close()
+
+	rule := mustRule(t, "PathPrefix(/)")
+	rule.CachableContentTypes = []string{"application/json"}
+	s := newTestService(t, origin.URL, []Rule{rule})
+
+	for i, want := range []string{"miss", "hit"} {
+		req := httptest.NewRequest(http.MethodGet, "http://wait0.local/data", nil)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+		if got := w.Result().Header.Get("X-Wait0"); got != want {
+			t.Fatalf("request %d X-Wait0 = %q, want %q", i+1, got, want)
+		}
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("origin hits = %d, want 1", got)
+	}
+}
+
 func TestHandle_BypassWhenCookiePresent(t *testing.T) {
 	var hits atomic.Int32
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +119,9 @@ func TestHandle_BypassWhenCookiePresent(t *testing.T) {
 
 	if got := w.Result().Header.Get("X-Wait0"); got != "ignore-by-cookie" {
 		t.Fatalf("X-Wait0 = %q, want ignore-by-cookie", got)
+	}
+	if got := w.Result().Header.Get("X-Wait0-Reason"); got != "bypass-cookie" {
+		t.Fatalf("X-Wait0-Reason = %q, want bypass-cookie", got)
 	}
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("origin hits = %d, want 1", got)

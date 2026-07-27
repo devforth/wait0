@@ -20,9 +20,10 @@ type fakeRuntime struct {
 	allKeys []string
 	origin  string
 
-	sendMarkers bool
-	random      string
-	doFunc      func(req *http.Request) (*http.Response, error)
+	sendMarkers  bool
+	random       string
+	contentTypes []string
+	doFunc       func(req *http.Request) (*http.Response, error)
 
 	putCalls    map[string]Entry
 	deleteCalls []string
@@ -87,9 +88,15 @@ func (f *fakeRuntime) Do(req *http.Request) (*http.Response, error) {
 	f.mu.Unlock()
 
 	if do == nil {
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/html"}}, Body: io.NopCloser(strings.NewReader("ok"))}, nil
 	}
 	return do(req)
+}
+
+func (f *fakeRuntime) CachableContentTypes(string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.contentTypes...)
 }
 
 func (f *fakeRuntime) SendRevalidateMarkers() bool {
@@ -144,7 +151,7 @@ func TestController_Async_DropsWhenQueueIsFull(t *testing.T) {
 func TestController_Async_ExecutesOnce(t *testing.T) {
 	rt := newFakeRuntime()
 	rt.doFunc = func(req *http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("body"))}, nil
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/html"}}, Body: io.NopCloser(strings.NewReader("body"))}, nil
 	}
 	bgSem := make(chan struct{}, 1)
 	var wg sync.WaitGroup
@@ -168,6 +175,7 @@ func TestController_Once_Branches(t *testing.T) {
 		cur         Entry
 		respStatus  int
 		cacheCtl    string
+		contentType string
 		body        string
 		sendMarkers bool
 		doErr       error
@@ -191,6 +199,7 @@ func TestController_Once_Branches(t *testing.T) {
 			wantChanged: true,
 			wantPut:     true,
 			wantReqHdr:  true,
+			contentType: "text/html; charset=utf-8",
 		},
 		{
 			name:        "unchanged",
@@ -201,6 +210,7 @@ func TestController_Once_Branches(t *testing.T) {
 			wantKind:    "unchanged",
 			wantPut:     true,
 			wantChanged: false,
+			contentType: "application/xhtml+xml",
 		},
 		{
 			name:        "delete by status",
@@ -211,6 +221,25 @@ func TestController_Once_Branches(t *testing.T) {
 			wantKind:    "deleted",
 			wantChanged: true,
 			wantDeleted: true,
+		},
+		{
+			name:        "delete by content type",
+			hasCur:      true,
+			cur:         Entry{Hash32: 1},
+			respStatus:  http.StatusOK,
+			contentType: "application/json",
+			body:        "x",
+			wantKind:    "deleted",
+			wantChanged: true,
+			wantDeleted: true,
+		},
+		{
+			name:        "ignore content type without current",
+			respStatus:  http.StatusOK,
+			contentType: "application/json",
+			body:        "x",
+			wantKind:    "ignored-content-type",
+			wantChanged: false,
 		},
 		{
 			name:        "ignored status without current",
@@ -258,6 +287,11 @@ func TestController_Once_Branches(t *testing.T) {
 				h := http.Header{}
 				if tc.cacheCtl != "" {
 					h.Set("Cache-Control", tc.cacheCtl)
+				}
+				if tc.contentType == "" {
+					h.Set("Content-Type", "text/html")
+				} else {
+					h.Set("Content-Type", tc.contentType)
 				}
 				var body io.ReadCloser = io.NopCloser(strings.NewReader(tc.body))
 				if tc.readErr {
@@ -348,7 +382,7 @@ func TestController_WarmupGroupLoop_StopAndLogs(t *testing.T) {
 		if req.URL.Path == "/y" {
 			return nil, errors.New("origin failed")
 		}
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("updated"))}, nil
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/html"}}, Body: io.NopCloser(strings.NewReader("updated"))}, nil
 	}
 
 	stopCh := make(chan struct{})

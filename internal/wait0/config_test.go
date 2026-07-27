@@ -32,7 +32,8 @@ rules:
     bypass: true
   - match: "PathPrefix(/)"
     priority: 1
-		varyByQueryParams: [" page ", "lang", "page"]
+    cachableContentType: [" Application/JSON; Charset=UTF-8 ", "application/json"]
+    varyByQueryParams: [" page ", "lang", "page"]
     expiration: "30s"
     warmUp:
       runEvery: "1m"
@@ -77,6 +78,18 @@ rules:
 			t.Fatalf("varyByQueryParams[%d] = %q, want %q", i, cfg.Rules[0].VaryByQueryParams[i], wantQueryParams[i])
 		}
 	}
+	if got := cfg.Rules[0].CachableContentTypes; len(got) != 1 || got[0] != "application/json" {
+		t.Fatalf("cachableContentType = %v, want [application/json]", got)
+	}
+	wantDefaultContentTypes := []string{"text/html", "application/xhtml+xml"}
+	if got := cfg.Rules[1].CachableContentTypes; len(got) != len(wantDefaultContentTypes) {
+		t.Fatalf("default cachableContentType = %v, want %v", got, wantDefaultContentTypes)
+	}
+	for i, want := range wantDefaultContentTypes {
+		if got := cfg.Rules[1].CachableContentTypes[i]; got != want {
+			t.Fatalf("default cachableContentType[%d] = %q, want %q", i, got, want)
+		}
+	}
 	if cfg.Rules[0].warmEvery != time.Minute || cfg.Rules[0].warmMax != 3 {
 		t.Fatalf("warmup compiled fields not set")
 	}
@@ -90,6 +103,7 @@ func TestLoadConfig_Errors(t *testing.T) {
 		{name: "missing origin", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  port: 8080\nrules: []\n"},
 		{name: "bad match", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"BadExpr(/)\"\n"},
 		{name: "bad varyByQueryParams", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    varyByQueryParams: [\"page\", \" \" ]\n"},
+		{name: "bad cachableContentType", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    cachableContentType: [\"not a content type\"]\n"},
 		{name: "bad warmup", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    warmUp:\n      runEvery: \"\"\n      maxRequestsAtATime: 1\n"},
 		{name: "bad log stats", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nlogging:\n  log_stats_every: \"bad\"\nrules: []\n"},
 		{name: "duplicate auth token ids", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\n  invalidation:\n    enabled: true\nauth:\n  tokens:\n    - id: \"dup\"\n      token: \"a\"\n      scopes: [\"invalidation:write\"]\n    - id: \"dup\"\n      token: \"b\"\n      scopes: [\"invalidation:write\"]\nrules: []\n"},

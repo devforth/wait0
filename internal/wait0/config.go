@@ -100,13 +100,14 @@ type WarmUpConfig struct {
 }
 
 type Rule struct {
-	Match             string        `yaml:"match"`
-	Priority          int           `yaml:"priority"`
-	Bypass            bool          `yaml:"bypass"`
-	BypassWhenCookies []string      `yaml:"bypassWhenCookies"`
-	VaryByQueryParams []string      `yaml:"varyByQueryParams"`
-	Expiration        string        `yaml:"expiration"`
-	WarmUp            *WarmUpConfig `yaml:"warmUp"`
+	Match                string        `yaml:"match"`
+	Priority             int           `yaml:"priority"`
+	Bypass               bool          `yaml:"bypass"`
+	BypassWhenCookies    []string      `yaml:"bypassWhenCookies"`
+	CachableContentTypes []string      `yaml:"cachableContentType"`
+	VaryByQueryParams    []string      `yaml:"varyByQueryParams"`
+	Expiration           string        `yaml:"expiration"`
+	WarmUp               *WarmUpConfig `yaml:"warmUp"`
 
 	// compiled
 	matchers  []pathPrefixMatcher
@@ -205,6 +206,11 @@ func LoadConfig(path string) (Config, error) {
 			return Config{}, fmt.Errorf("rules[%d].match: %w", i, err)
 		}
 		r.matchers = ms
+		contentTypes, err := proxy.NormalizeCachableContentTypes(r.CachableContentTypes)
+		if err != nil {
+			return Config{}, fmt.Errorf("rules[%d].cachableContentType: %w", i, err)
+		}
+		r.CachableContentTypes = contentTypes
 		if len(r.VaryByQueryParams) > 0 {
 			params, err := proxy.NormalizeVaryByQueryParams(r.VaryByQueryParams)
 			if err != nil {

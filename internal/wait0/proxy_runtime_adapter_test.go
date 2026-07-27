@@ -58,9 +58,13 @@ func TestProxyRuntimeAdapter_HandleControlAndRule(t *testing.T) {
 		t.Fatalf("expected matching rule")
 	}
 	rule.BypassWhenCookies = append(rule.BypassWhenCookies, "session")
+	rule.CachableContentTypes = append(rule.CachableContentTypes, "application/json")
 	base := s.pickRule("/api/x")
 	if len(base.BypassWhenCookies) != 0 {
 		t.Fatalf("rule cookie list should be copied")
+	}
+	if len(base.CachableContentTypes) != 0 {
+		t.Fatalf("rule content type list should be copied")
 	}
 }
 
@@ -137,8 +141,8 @@ func TestProxyRuntimeAdapter_RevalidateAndWriteStats(t *testing.T) {
 
 	s.stats = wstats.NewCollector()
 	w := httptest.NewRecorder()
-	a.WriteEntryWithStats(w, proxy.Entry{Status: http.StatusOK, Header: http.Header{}, Body: []byte("12345")}, "hit")
-	a.WriteEntryWithStats(w, proxy.Entry{Status: http.StatusOK, Header: http.Header{}, Body: []byte("123")}, "bypass")
+	a.WriteEntryWithStats(w, proxy.Entry{Status: http.StatusOK, Header: http.Header{}, Body: []byte("12345")}, "hit", "")
+	a.WriteEntryWithStats(w, proxy.Entry{Status: http.StatusOK, Header: http.Header{}, Body: []byte("123")}, "bypass", "bypass-rule")
 
 	snap := s.stats.Snapshot()
 	if snap.TotalResponses != 1 {

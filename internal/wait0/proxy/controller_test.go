@@ -24,11 +24,12 @@ type fakeRuntime struct {
 	originStatus    string
 	originErr       error
 
-	promoted    []string
-	deleted     []string
-	stored      []string
-	revalidated []struct{ key, path, query string }
-	writeWait0  []string
+	promoted     []string
+	deleted      []string
+	stored       []string
+	revalidated  []struct{ key, path, query string }
+	writeWait0   []string
+	writeReasons []string
 }
 
 func (f *fakeRuntime) HandleControl(http.ResponseWriter, *http.Request) bool {
@@ -55,12 +56,13 @@ func (f *fakeRuntime) RevalidateAsync(key, path, query string) {
 	f.revalidated = append(f.revalidated, struct{ key, path, query string }{key: key, path: path, query: query})
 }
 
-func (f *fakeRuntime) WriteEntryWithStats(w http.ResponseWriter, ent Entry, wait0 string) {
+func (f *fakeRuntime) WriteEntryWithStats(w http.ResponseWriter, ent Entry, wait0, reason string) {
 	f.writeWait0 = append(f.writeWait0, wait0)
+	f.writeReasons = append(f.writeReasons, reason)
 	if ent.Status == 0 {
 		ent.Status = http.StatusOK
 	}
-	WriteEntry(w, ent, wait0)
+	WriteEntry(w, ent, wait0, reason)
 }
 
 func TestController_Handle_ShortCircuitsControl(t *testing.T) {
@@ -78,16 +80,18 @@ func TestController_Handle_ShortCircuitsControl(t *testing.T) {
 
 func TestController_Handle_BypassPaths(t *testing.T) {
 	tests := []struct {
-		name string
-		rule *Rule
-		req  *http.Request
-		want string
+		name   string
+		rule   *Rule
+		req    *http.Request
+		want   string
+		reason string
 	}{
 		{
-			name: "rule bypass",
-			rule: &Rule{Bypass: true},
-			req:  httptest.NewRequest(http.MethodGet, "http://wait0.local/a", nil),
-			want: "bypass",
+			name:   "rule bypass",
+			rule:   &Rule{Bypass: true},
+			req:    httptest.NewRequest(http.MethodGet, "http://wait0.local/a", nil),
+			want:   "bypass",
+			reason: "bypass-rule",
 		},
 		{
 			name: "cookie bypass",
@@ -97,13 +101,15 @@ func TestController_Handle_BypassPaths(t *testing.T) {
 				r.AddCookie(&http.Cookie{Name: "session", Value: "1"})
 				return r
 			}(),
-			want: "ignore-by-cookie",
+			want:   "ignore-by-cookie",
+			reason: "bypass-cookie",
 		},
 		{
-			name: "non get bypass",
-			rule: &Rule{},
-			req:  httptest.NewRequest(http.MethodPost, "http://wait0.local/c", nil),
-			want: "bypass",
+			name:   "non get bypass",
+			rule:   &Rule{},
+			req:    httptest.NewRequest(http.MethodPost, "http://wait0.local/c", nil),
+			want:   "bypass",
+			reason: "non-get-method",
 		},
 	}
 
@@ -123,6 +129,9 @@ func TestController_Handle_BypassPaths(t *testing.T) {
 			}
 			if got := w.Result().Header.Get("X-Wait0"); got != tc.want {
 				t.Fatalf("X-Wait0 = %q, want %q", got, tc.want)
+			}
+			if got := w.Result().Header.Get("X-Wait0-Reason"); got != tc.reason {
+				t.Fatalf("X-Wait0-Reason = %q, want %q", got, tc.reason)
 			}
 		})
 	}
@@ -156,7 +165,7 @@ func TestController_Handle_RAMHitAndStaleRevalidation(t *testing.T) {
 func TestController_Handle_QueryAwareCacheKeys(t *testing.T) {
 	rt := &fakeRuntime{
 		rule:            &Rule{VaryByQueryParams: []string{"page"}},
-		originEnt:       Entry{Status: http.StatusCreated, Header: http.Header{}, Body: []byte("origin")},
+		originEnt:       Entry{Status: http.StatusCreated, Header: http.Header{"Content-Type": {"text/html; charset=utf-8"}}, Body: []byte("origin")},
 		originCacheable: true,
 		originStatus:    "ok",
 	}
@@ -221,15 +230,18 @@ func TestController_Handle_OriginBranches(t *testing.T) {
 		err           error
 		wantCode      int
 		wantWait0     string
+		wantReason    string
 		wantDelete    bool
 		wantStore     bool
 		wantBodyMatch string
+		contentType   string
 	}{
 		{
 			name:          "origin error",
 			err:           errors.New("boom"),
 			wantCode:      http.StatusBadGateway,
 			wantWait0:     "bad-gateway",
+			wantReason:    "origin-error",
 			wantBodyMatch: "bad gateway",
 		},
 		{
@@ -237,29 +249,44 @@ func TestController_Handle_OriginBranches(t *testing.T) {
 			statusKind: "ignore-by-status",
 			wantCode:   http.StatusNotFound,
 			wantWait0:  "ignore-by-status",
+			wantReason: "non-cacheable-status",
 			wantDelete: true,
 		},
 		{
-			name:       "non cacheable",
+			name:       "non cacheable by cache control",
 			cacheable:  false,
 			statusKind: "ok",
 			wantCode:   http.StatusCreated,
 			wantWait0:  "bypass",
+			wantReason: "non-cacheable-cache-control",
 		},
 		{
-			name:       "cacheable miss",
-			cacheable:  true,
-			statusKind: "ok",
-			wantCode:   http.StatusCreated,
-			wantWait0:  "miss",
-			wantStore:  true,
+			name:        "non cacheable content type",
+			cacheable:   true,
+			statusKind:  "ok",
+			contentType: "application/json",
+			wantCode:    http.StatusCreated,
+			wantWait0:   "bypass",
+			wantReason:  "non-cacheable-content-type",
+		},
+		{
+			name:        "cacheable miss",
+			cacheable:   true,
+			statusKind:  "ok",
+			contentType: "text/html; charset=utf-8",
+			wantCode:    http.StatusCreated,
+			wantWait0:   "miss",
+			wantStore:   true,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.contentType == "" {
+				tc.contentType = "text/html"
+			}
 			rt := &fakeRuntime{
-				originEnt:       Entry{Status: http.StatusCreated, Header: http.Header{}, Body: []byte("origin")},
+				originEnt:       Entry{Status: http.StatusCreated, Header: http.Header{"Content-Type": {tc.contentType}}, Body: []byte("origin")},
 				originCacheable: tc.cacheable,
 				originStatus:    tc.statusKind,
 				originErr:       tc.err,
@@ -280,6 +307,9 @@ func TestController_Handle_OriginBranches(t *testing.T) {
 				if got := w.Result().Header.Get("X-Wait0"); got != tc.wantWait0 {
 					t.Fatalf("X-Wait0 = %q, want %q", got, tc.wantWait0)
 				}
+			}
+			if got := w.Result().Header.Get("X-Wait0-Reason"); got != tc.wantReason {
+				t.Fatalf("X-Wait0-Reason = %q, want %q", got, tc.wantReason)
 			}
 			if tc.wantDelete != (len(rt.deleted) == 1) {
 				t.Fatalf("deleted = %v", rt.deleted)

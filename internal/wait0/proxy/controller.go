@@ -15,7 +15,7 @@ type Runtime interface {
 	FetchFromOrigin(r *http.Request) (Entry, bool, string, error)
 	Store(key string, ent Entry)
 	RevalidateAsync(key, path, query string)
-	WriteEntryWithStats(w http.ResponseWriter, ent Entry, wait0 string)
+	WriteEntryWithStats(w http.ResponseWriter, ent Entry, wait0, reason string)
 }
 
 type Controller struct {
@@ -42,24 +42,24 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 
 	if rule != nil {
 		if rule.Bypass {
-			c.proxyPass(w, r, "bypass")
+			c.proxyPass(w, r, "bypass", "bypass-rule")
 			return
 		}
 		if HasAnyCookie(r, rule.BypassWhenCookies) {
-			c.proxyPass(w, r, "ignore-by-cookie")
+			c.proxyPass(w, r, "ignore-by-cookie", "bypass-cookie")
 			return
 		}
 	}
 
 	if r.Method != http.MethodGet {
-		c.proxyPass(w, r, "bypass")
+		c.proxyPass(w, r, "bypass", "non-get-method")
 		return
 	}
 
 	now := time.Now().Unix()
 	if ent, ok := c.rt.LoadRAM(key, now); ok {
 		if !ent.Inactive {
-			c.rt.WriteEntryWithStats(w, ent, "hit")
+			c.rt.WriteEntryWithStats(w, ent, "hit", "")
 			if rule != nil && rule.Expiration > 0 && IsStale(ent, rule.Expiration) {
 				c.rt.RevalidateAsync(key, path, cacheQuery)
 			}
@@ -70,7 +70,7 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 	if ent, ok := c.rt.LoadDisk(key); ok {
 		if !ent.Inactive {
 			c.rt.PromoteRAM(key, ent)
-			c.rt.WriteEntryWithStats(w, ent, "hit")
+			c.rt.WriteEntryWithStats(w, ent, "hit", "")
 			if rule != nil && rule.Expiration > 0 && IsStale(ent, rule.Expiration) {
 				c.rt.RevalidateAsync(key, path, cacheQuery)
 			}
@@ -80,30 +80,39 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 
 	respEnt, cacheable, statusKind, err := c.rt.FetchFromOrigin(r)
 	if err != nil {
-		SetWait0Headers(w.Header(), "bad-gateway")
+		SetWait0Headers(w.Header(), "bad-gateway", "origin-error")
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
 	if statusKind == "ignore-by-status" {
 		c.rt.DeleteKey(key)
-		c.rt.WriteEntryWithStats(w, respEnt, "ignore-by-status")
+		c.rt.WriteEntryWithStats(w, respEnt, "ignore-by-status", "non-cacheable-status")
 		return
 	}
 	if !cacheable {
-		c.rt.WriteEntryWithStats(w, respEnt, "bypass")
+		c.rt.WriteEntryWithStats(w, respEnt, "bypass", "non-cacheable-cache-control")
+		return
+	}
+
+	var cachableContentTypes []string
+	if rule != nil {
+		cachableContentTypes = rule.CachableContentTypes
+	}
+	if !IsCachableContentType(respEnt.Header.Get("Content-Type"), cachableContentTypes) {
+		c.rt.WriteEntryWithStats(w, respEnt, "bypass", "non-cacheable-content-type")
 		return
 	}
 
 	c.rt.Store(key, respEnt)
-	c.rt.WriteEntryWithStats(w, respEnt, "miss")
+	c.rt.WriteEntryWithStats(w, respEnt, "miss", "")
 }
 
-func (c *Controller) proxyPass(w http.ResponseWriter, r *http.Request, wait0 string) {
+func (c *Controller) proxyPass(w http.ResponseWriter, r *http.Request, wait0, reason string) {
 	ent, _, _, err := c.rt.FetchFromOrigin(r)
 	if err != nil {
-		SetWait0Headers(w.Header(), "bad-gateway")
+		SetWait0Headers(w.Header(), "bad-gateway", "origin-error")
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
-	c.rt.WriteEntryWithStats(w, ent, wait0)
+	c.rt.WriteEntryWithStats(w, ent, wait0, reason)
 }

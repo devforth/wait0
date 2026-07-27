@@ -59,10 +59,11 @@ func (a *proxyRuntimeAdapter) PickRule(path string) *proxy.Rule {
 		return nil
 	}
 	return &proxy.Rule{
-		Bypass:            r.Bypass,
-		BypassWhenCookies: append([]string(nil), r.BypassWhenCookies...),
-		VaryByQueryParams: append([]string(nil), r.VaryByQueryParams...),
-		Expiration:        r.expDur,
+		Bypass:               r.Bypass,
+		BypassWhenCookies:    append([]string(nil), r.BypassWhenCookies...),
+		CachableContentTypes: append([]string(nil), r.CachableContentTypes...),
+		VaryByQueryParams:    append([]string(nil), r.VaryByQueryParams...),
+		Expiration:           r.expDur,
 	}
 }
 
@@ -108,8 +109,8 @@ func (a *proxyRuntimeAdapter) RevalidateAsync(key, path, query string) {
 	a.s.reval.Async(key, path, query, "user")
 }
 
-func (a *proxyRuntimeAdapter) WriteEntryWithStats(w http.ResponseWriter, ent proxy.Entry, wait0 string) {
-	proxy.WriteEntry(w, ent, wait0)
+func (a *proxyRuntimeAdapter) WriteEntryWithStats(w http.ResponseWriter, ent proxy.Entry, wait0, reason string) {
+	proxy.WriteEntry(w, ent, wait0, reason)
 	if a.s.stats != nil {
 		switch wait0 {
 		case "hit", "miss":

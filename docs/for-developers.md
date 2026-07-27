@@ -128,6 +128,7 @@ For dashboard:
 | `priority` | no | Rules are sorted ascending by priority |
 | `bypass` | no | For matching paths, bypass cache completely |
 | `bypassWhenCookies[]` | no | If any listed cookie exists, bypass cache |
+| `cachableContentType[]` | no | Exact cache-eligible media types; defaults to `text/html` and `application/xhtml+xml`; parameters are ignored |
 | `varyByQueryParams[]` | no | Query params that should participate in cache identity for matching paths |
 | `expiration` | no | Duration for stale check and async revalidation |
 | `warmUp.runEvery` | with `warmUp` | Duration, must be `> 0` |
@@ -157,9 +158,13 @@ For dashboard:
 - Rule field `varyByQueryParams[]` opt-ins selected query params so `/a/b?page`, `/a/b?page=1`, and `/a/b` can be distinct cache entries.
 - Query params not listed in `varyByQueryParams[]` and all fragments are ignored for cache identity.
 - Only `GET` requests are cache-eligible.
+- Bypassed and non-`GET` requests are sent upstream as `GET` without the original body.
 - Non-2xx origin responses are not cached and existing cached key is removed.
-- Dynamic pages are expected to send `Cache-Control: no-cache` or `no-store` so wait0 treats them as passthrough and revalidation-managed.
+- Origin responses whose media type is not in `cachableContentType` are served but not stored; background revalidation deletes an existing entry if its new media type is disallowed.
+- We recommend to Keep static assets in CDN, Nginx, and browser caches; wait0 defaults to caching only dynamic HTML/XHTML SWR responses.
+- Origin `2xx` responses with `Cache-Control: no-cache` or `no-store` are not stored; either directive received during revalidation deletes the existing entry.
 - `X-Wait0` response header identifies behavior (`hit`, `miss`, `bypass`, `ignore-by-cookie`, `ignore-by-status`, `bad-gateway`).
+- `X-Wait0-Reason` identifies why a response was bypassed or failed (for example, `bypass-rule` or `non-cacheable-content-type`).
 
 ## See Also
 

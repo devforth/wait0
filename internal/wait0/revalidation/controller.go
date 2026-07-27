@@ -25,6 +25,7 @@ type Runtime interface {
 	AllKeys() []string
 	Origin() string
 	Do(req *http.Request) (*http.Response, error)
+	CachableContentTypes(path string) []string
 	SendRevalidateMarkers() bool
 	RandomString(n int) string
 }
@@ -148,6 +149,17 @@ func (c *Controller) Once(ctx context.Context, key, path, query, by string) Resu
 		return res
 	}
 
+	if !proxy.IsCachableContentType(resp.Header.Get("Content-Type"), c.rt.CachableContentTypes(path)) {
+		if hasCur {
+			c.rt.Delete(key)
+			res.Changed = true
+			res.Kind = "deleted"
+		} else {
+			res.Kind = "ignored-content-type"
+		}
+		return res
+	}
+
 	now := time.Now().UTC()
 	newEnt := Entry{
 		Status:        resp.StatusCode,
@@ -192,13 +204,13 @@ func (c *Controller) WarmupGroupLoop(rule WarmRule) {
 	var batchStart time.Time
 	var urls int
 	var minRT, maxRT, sumRT time.Duration
-	var unchanged, updated, deleted, ignoredStatus, ignoredCacheControl, errors int
+	var unchanged, updated, deleted, ignoredStatus, ignoredCacheControl, ignoredContentType, errors int
 
 	resetBatch := func() {
 		batchStart = time.Time{}
 		urls = 0
 		minRT, maxRT, sumRT = 0, 0, 0
-		unchanged, updated, deleted, ignoredStatus, ignoredCacheControl, errors = 0, 0, 0, 0, 0, 0
+		unchanged, updated, deleted, ignoredStatus, ignoredCacheControl, ignoredContentType, errors = 0, 0, 0, 0, 0, 0, 0
 	}
 
 	makeSummary := func() WarmupSummary {
@@ -227,6 +239,7 @@ func (c *Controller) WarmupGroupLoop(rule WarmRule) {
 			Deleted:             deleted,
 			IgnoredStatus:       ignoredStatus,
 			IgnoredCacheControl: ignoredCacheControl,
+			IgnoredContentType:  ignoredContentType,
 			Errors:              errors,
 		}
 	}
@@ -241,9 +254,9 @@ func (c *Controller) WarmupGroupLoop(rule WarmRule) {
 		if c.logWarmUp && c.summaryLog != nil {
 			sum := makeSummary()
 			c.summaryLog.Printf(
-				"Revalidated for match %q: %d URLs (unchanged=%d updated=%d deleted=%d ignoredStatus=%d ignoredCC=%d errors=%d updated+errors=%d), Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
+				"Revalidated for match %q: %d URLs (unchanged=%d updated=%d deleted=%d ignoredStatus=%d ignoredCC=%d ignoredContentType=%d errors=%d updated+errors=%d), Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
 				sum.Match, sum.URLs,
-				sum.Unchanged, sum.Updated, sum.Deleted, sum.IgnoredStatus, sum.IgnoredCacheControl, sum.Errors, sum.Updated+sum.Errors,
+				sum.Unchanged, sum.Updated, sum.Deleted, sum.IgnoredStatus, sum.IgnoredCacheControl, sum.IgnoredContentType, sum.Errors, sum.Updated+sum.Errors,
 				sum.Took.Truncate(time.Millisecond), sum.RPS,
 				sum.MinRT.Truncate(time.Millisecond), sum.AvgRT.Truncate(time.Millisecond), sum.MaxRT.Truncate(time.Millisecond),
 			)
@@ -299,9 +312,9 @@ func (c *Controller) WarmupGroupLoop(rule WarmRule) {
 			if !batchStart.IsZero() && c.logWarmUp && c.summaryLog != nil {
 				sum := makeSummary()
 				c.summaryLog.Printf(
-					"Revalidated for match %q: %d URLs (unchanged=%d updated=%d deleted=%d ignoredStatus=%d ignoredCC=%d errors=%d updated+errors=%d), Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
+					"Revalidated for match %q: %d URLs (unchanged=%d updated=%d deleted=%d ignoredStatus=%d ignoredCC=%d ignoredContentType=%d errors=%d updated+errors=%d), Took: %s, RPS: %.2f, resp time min/avg/max - %s/%s/%s",
 					sum.Match, sum.URLs,
-					sum.Unchanged, sum.Updated, sum.Deleted, sum.IgnoredStatus, sum.IgnoredCacheControl, sum.Errors, sum.Updated+sum.Errors,
+					sum.Unchanged, sum.Updated, sum.Deleted, sum.IgnoredStatus, sum.IgnoredCacheControl, sum.IgnoredContentType, sum.Errors, sum.Updated+sum.Errors,
 					sum.Took.Truncate(time.Millisecond), sum.RPS,
 					sum.MinRT.Truncate(time.Millisecond), sum.AvgRT.Truncate(time.Millisecond), sum.MaxRT.Truncate(time.Millisecond),
 				)
@@ -346,6 +359,8 @@ func (c *Controller) WarmupGroupLoop(rule WarmRule) {
 					ignoredStatus++
 				case "ignored-cache-control":
 					ignoredCacheControl++
+				case "ignored-content-type":
+					ignoredContentType++
 				case "error":
 					errors++
 					if c.errorLog != nil {

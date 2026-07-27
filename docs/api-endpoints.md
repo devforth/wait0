@@ -28,28 +28,34 @@ This is the default request path handled by the proxy controller.
 
 ## Behavior
 
-| Condition | Result | `X-Wait0` |
-|----------|--------|-----------|
-| Matching rule has `bypass: true` | Forward to origin, no cache write | `bypass` |
-| Matching rule cookie bypass is triggered | Forward to origin, no cache write | `ignore-by-cookie` |
-| Method is not `GET` | Forward to origin, no cache write | `bypass` |
-| RAM or disk hit for active entry | Serve cached response instantly | `hit` |
-| Miss and cacheable origin `2xx` | Store and serve response | `miss` |
-| Origin non-`2xx` | Do not cache, evict existing key | `ignore-by-status` |
-| Origin fetch/network failure | Gateway error | `bad-gateway` |
+| Condition | Result | `X-Wait0` | `X-Wait0-Reason` |
+|----------|--------|-----------|------------------|
+| Matching rule has `bypass: true` | Skip cache; fetch upstream with bodyless `GET` | `bypass` | `bypass-rule` |
+| Matching rule cookie bypass is triggered | Skip cache; fetch upstream with bodyless `GET` | `ignore-by-cookie` | `bypass-cookie` |
+| Method is not `GET` | Skip cache; convert to bodyless upstream `GET` | `bypass` | `non-get-method` |
+| RAM or disk hit for active entry | Serve cached response instantly | `hit` | absent |
+| Miss and cacheable origin `2xx` | Store and serve response | `miss` | absent |
+| Origin `2xx` has disallowed `Content-Type` | Serve without storing | `bypass` | `non-cacheable-content-type` |
+| Origin `2xx` has `no-cache` or `no-store` | Serve without storing | `bypass` | `non-cacheable-cache-control` |
+| Origin non-`2xx` | Do not cache, evict existing key | `ignore-by-status` | `non-cacheable-status` |
+| Origin fetch/network failure | Gateway error | `bad-gateway` | `origin-error` |
 
 ## Cacheability rule
 
 An origin response is cacheable only when:
 
 - status is `2xx`, and
+- the media type in `Content-Type` appears in the matching rule's `cachableContentType` list, and
 - `Cache-Control` does not include `no-store` or `no-cache`.
+
+`cachableContentType` defaults to `text/html` and `application/xhtml+xml`. Matching is case-insensitive and ignores media-type parameters such as `charset=utf-8`. A missing or malformed `Content-Type` is not cacheable.
 
 ## Response headers added by wait0
 
 | Header | When present | Meaning |
 |--------|--------------|---------|
 | `X-Wait0` | always on handled responses | Cache/proxy decision marker |
+| `X-Wait0-Reason` | response bypassed or failed | Machine-readable reason the response was not cached |
 | `X-Wait0-Revalidated-At` | cache `hit` with revalidation metadata | Last revalidation timestamp (RFC3339Nano) |
 | `X-Wait0-Revalidated-By` | with `X-Wait0-Revalidated-At` | Revalidation source (`user`, `warmup`, `invalidate`, etc.) |
 | `X-Wait0-Discovered-By` | if entry was discovery seeded | Discovery source marker |
