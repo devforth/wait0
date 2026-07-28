@@ -14,6 +14,18 @@ type Entry struct {
 	DiscoveredBy  string
 	RevalidatedAt int64
 	RevalidatedBy string
+
+	Variant *VariantData
+}
+
+type VariantData struct {
+	Kind           string
+	Expressions    []string
+	Fingerprint    string
+	HeaderNames    []string
+	BaseKey        string
+	Values         []string
+	RequestHeaders http.Header
 }
 
 type EntryMeta struct {
@@ -32,6 +44,10 @@ type EntryMeta struct {
 
 	// StoredAtUnix is unix seconds timestamp.
 	StoredAtUnix int64
+
+	VariantKind    string
+	VariantBaseKey string
+	VariantValues  []string
 }
 
 func EntryLogicalSize(ent Entry) int64 {

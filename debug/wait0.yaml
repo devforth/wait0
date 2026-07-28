@@ -43,6 +43,8 @@ rules:
     priority: 2
     bypassWhenCookies:
       - sessionid
+    # bypassWhenRequestHeaders:
+    #   - Authorization
     expiration: '10s'
     warmUp:
       pauseBetweenRuns: '10s'

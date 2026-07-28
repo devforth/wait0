@@ -2,6 +2,7 @@ package revalidation
 
 import (
 	"context"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"net/http"
@@ -21,13 +22,14 @@ type Logger interface {
 
 type Runtime interface {
 	Peek(key string) (Entry, bool)
-	Put(key string, ent Entry)
+	StoreResponse(target Target, ent Entry) (Entry, error)
 	Delete(key string)
 	SnapshotAccessTimes() map[string]int64
 	AllKeys() []string
 	Origin() string
 	Do(req *http.Request) (*http.Response, error)
 	CachableContentTypes(path string) []string
+	ResolveVariantTarget(baseKey string, headers http.Header, host string) (string, bool, error)
 	SendRevalidateMarkers() bool
 	DebugHeaderEnabled(name string) bool
 	RandomString(n int) string
@@ -70,7 +72,7 @@ func (c *Controller) SetDurationObserver(fn func(time.Duration)) {
 	c.observeDuration = fn
 }
 
-func (c *Controller) Async(key, path, query, by string) {
+func (c *Controller) Async(target Target, by string) {
 	select {
 	case c.bgSem <- struct{}{}:
 	default:
@@ -83,18 +85,18 @@ func (c *Controller) Async(key, path, query, by string) {
 		defer c.wg.Done()
 		defer func() { <-c.bgSem }()
 		defer cancel()
-		_ = c.Once(ctx, key, path, query, by)
+		_ = c.Once(ctx, target, by)
 	}()
 }
 
-func (c *Controller) Once(ctx context.Context, key, path, query, by string) Result {
+func (c *Controller) Once(ctx context.Context, target Target, by string) Result {
 	start := time.Now()
 	defer func() {
 		if c.observeDuration != nil {
 			c.observeDuration(time.Since(start))
 		}
 	}()
-	cur, hasCur := c.rt.Peek(key)
+	cur, hasCur := c.rt.Peek(target.Key)
 
 	discoveredBy := "user"
 	if hasCur {
@@ -103,15 +105,29 @@ func (c *Controller) Once(ctx context.Context, key, path, query, by string) Resu
 		}
 	}
 
-	uri := path
-	if query != "" {
-		uri += "?" + query
+	uri := target.Path
+	if target.Query != "" {
+		uri += "?" + target.Query
 	}
 	originURL := c.rt.Origin() + uri
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, originURL, nil)
 	if err != nil {
-		return Result{OK: false, Changed: false, Dur: time.Since(start), URI: uri, Path: path, Kind: "error", Err: err.Error()}
+		return Result{OK: false, Changed: false, Dur: time.Since(start), URI: uri, Path: target.Path, Kind: "error", Err: err.Error()}
+	}
+	for name, values := range target.Headers {
+		if strings.EqualFold(name, "Host") {
+			if len(values) > 0 {
+				req.Host = values[0]
+			}
+			continue
+		}
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
+	if target.Host != "" {
+		req.Host = target.Host
 	}
 
 	if c.rt.SendRevalidateMarkers() {
@@ -126,13 +142,13 @@ func (c *Controller) Once(ctx context.Context, key, path, query, by string) Resu
 
 	resp, err := c.rt.Do(req)
 	if err != nil {
-		return Result{OK: false, Changed: false, Dur: time.Since(start), URI: uri, Path: path, Kind: "error", Err: err.Error()}
+		return Result{OK: false, Changed: false, Dur: time.Since(start), URI: uri, Path: target.Path, Kind: "error", Err: err.Error()}
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return Result{OK: false, Changed: false, Dur: time.Since(start), URI: uri, Path: path, Kind: "error", Err: err.Error()}
+		return Result{OK: false, Changed: false, Dur: time.Since(start), URI: uri, Path: target.Path, Kind: "error", Err: err.Error()}
 	}
 
 	res := Result{
@@ -140,12 +156,12 @@ func (c *Controller) Once(ctx context.Context, key, path, query, by string) Resu
 		Changed: false,
 		Dur:     time.Since(start),
 		URI:     uri,
-		Path:    path,
+		Path:    target.Path,
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		if hasCur {
-			c.rt.Delete(key)
+		if hasCur && !target.PreserveExisting {
+			c.rt.Delete(target.Key)
 			res.Changed = true
 			res.Kind = "deleted"
 		} else {
@@ -156,8 +172,8 @@ func (c *Controller) Once(ctx context.Context, key, path, query, by string) Resu
 
 	cc := strings.ToLower(resp.Header.Get("Cache-Control"))
 	if strings.Contains(cc, "no-store") || strings.Contains(cc, "no-cache") {
-		if hasCur {
-			c.rt.Delete(key)
+		if hasCur && !target.PreserveExisting {
+			c.rt.Delete(target.Key)
 			res.Changed = true
 			res.Kind = "deleted"
 		} else {
@@ -166,9 +182,9 @@ func (c *Controller) Once(ctx context.Context, key, path, query, by string) Resu
 		return res
 	}
 
-	if !proxy.IsCachableContentType(resp.Header.Get("Content-Type"), c.rt.CachableContentTypes(path)) {
-		if hasCur {
-			c.rt.Delete(key)
+	if !proxy.IsCachableContentType(resp.Header.Get("Content-Type"), c.rt.CachableContentTypes(target.Path)) {
+		if hasCur && !target.PreserveExisting {
+			c.rt.Delete(target.Key)
 			res.Changed = true
 			res.Kind = "deleted"
 		} else {
@@ -194,13 +210,22 @@ func (c *Controller) Once(ctx context.Context, key, path, query, by string) Resu
 	if hasCur && cur.Hash32 == newEnt.Hash32 {
 		res.Kind = "unchanged"
 		if c.unchangedLog != nil {
-			c.unchangedLog.Printf("Revalidate unchanged: path=%q uri=%q", path, uri)
+			c.unchangedLog.Printf("Revalidate unchanged: path=%q uri=%q", target.Path, uri)
 		}
-		c.rt.Put(key, newEnt)
+		if _, err := c.rt.StoreResponse(target, newEnt); err != nil {
+			res.OK = false
+			res.Kind = "error"
+			res.Err = err.Error()
+		}
 		return res
 	}
 
-	c.rt.Put(key, newEnt)
+	if _, err := c.rt.StoreResponse(target, newEnt); err != nil {
+		res.OK = false
+		res.Kind = "error"
+		res.Err = err.Error()
+		return res
+	}
 	res.Changed = true
 	res.Kind = "updated"
 	return res
@@ -243,8 +268,8 @@ func (c *Controller) WarmupGroupLoop(rule WarmRule) {
 func (c *Controller) runWarmupBatch(rule WarmRule) (WarmupSummary, bool) {
 	start := time.Now()
 	summary := WarmupSummary{RuleID: rule.ID, Match: rule.Match}
-	keys := c.KeysByLastAccessDesc(rule)
-	if len(keys) == 0 {
+	targets := c.WarmupTargets(rule)
+	if len(targets) == 0 {
 		summary.FinishedAt = time.Now().UTC()
 		summary.Took = summary.FinishedAt.Sub(start)
 		return summary, true
@@ -261,16 +286,15 @@ func (c *Controller) runWarmupBatch(rule WarmRule) (WarmupSummary, bool) {
 	sumRT := time.Duration(0)
 
 	dispatch := func() {
-		for !stopping && inflight < rule.WarmMax && next < len(keys) {
-			key := keys[next]
+		for !stopping && inflight < rule.WarmMax && next < len(targets) {
+			target := targets[next]
 			next++
 			inflight++
-			go func(k string) {
+			go func(t Target) {
 				ctx, cancel := context.WithTimeout(batchCtx, 30*time.Second)
 				defer cancel()
-				path, query := proxy.SplitCacheKey(k)
-				results <- c.Once(ctx, k, path, query, "warmup")
-			}(key)
+				results <- c.Once(ctx, t, "warmup")
+			}(target)
 		}
 	}
 
@@ -299,7 +323,7 @@ func (c *Controller) runWarmupBatch(rule WarmRule) (WarmupSummary, bool) {
 		}
 	}
 
-	if stopping || next < len(keys) {
+	if stopping || next < len(targets) {
 		return WarmupSummary{}, false
 	}
 
@@ -448,6 +472,134 @@ func (c *Controller) KeysByLastAccessDesc(rule WarmRule) []string {
 		out = append(out, it.k)
 	}
 	return out
+}
+
+func (c *Controller) WarmupTargets(rule WarmRule) []Target {
+	access := c.rt.SnapshotAccessTimes()
+	if len(access) == 0 {
+		return nil
+	}
+
+	type group struct {
+		base       string
+		lastAccess int64
+		discovered []Target
+	}
+	groups := make(map[string]*group)
+	for key, ts := range access {
+		base := proxy.BaseCacheKey(key)
+		path := proxy.CacheKeyPath(base)
+		if rule.Matches != nil && !rule.Matches(path) {
+			continue
+		}
+		ent, ok := c.rt.Peek(key)
+		if !ok {
+			continue
+		}
+		g := groups[base]
+		if g == nil {
+			g = &group{base: base}
+			groups[base] = g
+		}
+		if ts > g.lastAccess {
+			g.lastAccess = ts
+		}
+		if ent.VariantKind == "manifest" {
+			continue
+		}
+		if ent.Inactive && len(rule.PresetHeaderNames) > 0 {
+			// Presets are the initial population strategy for sitemap seeds;
+			// avoid an extra headerless request in addition to the Cartesian set.
+			continue
+		}
+		basePath, query := proxy.SplitCacheKey(base)
+		target := Target{
+			Key:     key,
+			Path:    basePath,
+			Query:   query,
+			Headers: cloneHeader(ent.VariantRequestHeaders),
+		}
+		if host := target.Headers.Get("Host"); host != "" {
+			target.Host = host
+		}
+		g.discovered = append(g.discovered, target)
+	}
+
+	ordered := make([]*group, 0, len(groups))
+	for _, g := range groups {
+		ordered = append(ordered, g)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].lastAccess == ordered[j].lastAccess {
+			return ordered[i].base < ordered[j].base
+		}
+		return ordered[i].lastAccess > ordered[j].lastAccess
+	})
+
+	out := make([]Target, 0)
+	for _, g := range ordered {
+		sort.Slice(g.discovered, func(i, j int) bool { return g.discovered[i].Key < g.discovered[j].Key })
+		seen := make(map[string]struct{}, len(g.discovered))
+		for _, target := range g.discovered {
+			seen[target.Key] = struct{}{}
+			out = append(out, target)
+		}
+
+		for _, headers := range expandHeaderPresets(rule.PresetHeaderNames, rule.RequestHeaderPresets) {
+			host := headers.Get("Host")
+			resolvedKey, resolved, err := c.rt.ResolveVariantTarget(g.base, headers, host)
+			id := ""
+			if err == nil && resolved {
+				id = resolvedKey
+			} else {
+				id = g.base + "\x00preset:" + headerSignature(rule.PresetHeaderNames, headers)
+				resolvedKey = g.base
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			path, query := proxy.SplitCacheKey(g.base)
+			out = append(out, Target{
+				Key:              resolvedKey,
+				Path:             path,
+				Query:            query,
+				Headers:          headers,
+				Host:             host,
+				PreserveExisting: err != nil,
+			})
+		}
+	}
+	return out
+}
+
+func expandHeaderPresets(names []string, presets map[string][]string) []http.Header {
+	if len(names) == 0 {
+		return nil
+	}
+	out := []http.Header{{}}
+	for _, name := range names {
+		values := presets[name]
+		next := make([]http.Header, 0, len(out)*len(values))
+		for _, base := range out {
+			for _, value := range values {
+				h := cloneHeader(base)
+				h.Set(name, value)
+				next = append(next, h)
+			}
+		}
+		out = next
+	}
+	return out
+}
+
+func headerSignature(names []string, headers http.Header) string {
+	var b strings.Builder
+	for _, name := range names {
+		value := headers.Get(name)
+		b.WriteString(fmt.Sprintf("%d:%s%d:%s", len(name), name, len(value), value))
+	}
+	return b.String()
 }
 
 func (c *Controller) AllKeysSnapshot() []string {

@@ -38,6 +38,7 @@ type Service struct {
 
 	sendRevalidateMarkers bool
 	debugHeaders          proxy.DebugHeaderSet
+	variants              *variantState
 
 	stats *wstats.Collector
 
@@ -120,7 +121,9 @@ func NewService(cfg Config) (*Service, error) {
 		sendRevalidateMarkers: envBool("WAIT0_SEND_REVALIDATE_MARKERS", true),
 		debugHeaders:          proxy.NewDebugHeaderSet(cfg.Logging.DebugHeaders),
 		stats:                 wstats.NewCollector(),
+		variants:              newVariantState(),
 	}
+	s.rebuildVariantFamilies()
 
 	authCfgs := make([]auth.TokenConfig, 0, len(cfg.Auth.Tokens))
 	for _, t := range cfg.Auth.Tokens {
@@ -291,14 +294,27 @@ func (s *Service) startWarmupGroups() {
 		go func(ruleID int, rule *Rule) {
 			defer s.wg.Done()
 			s.reval.WarmupGroupLoop(revalidation.WarmRule{
-				ID:               ruleID,
-				Match:            rule.Match,
-				PauseBetweenRuns: rule.warmPause,
-				WarmMax:          rule.warmMax,
-				Matches:          rule.Matches,
+				ID:                   ruleID,
+				Match:                rule.Match,
+				PauseBetweenRuns:     rule.warmPause,
+				WarmMax:              rule.warmMax,
+				Matches:              rule.Matches,
+				PresetHeaderNames:    append([]string(nil), rule.warmPresetHeaderNames...),
+				RequestHeaderPresets: cloneStringSliceMap(rule.WarmupRequestHeaderPresets),
 			})
 		}(i, r)
 	}
+}
+
+func cloneStringSliceMap(in map[string][]string) map[string][]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for key, values := range in {
+		out[key] = append([]string(nil), values...)
+	}
+	return out
 }
 
 type statsCacheIndex struct {
@@ -307,6 +323,10 @@ type statsCacheIndex struct {
 
 func (i statsCacheIndex) RAMKeys() []string {
 	return i.s.ram.Keys()
+}
+
+func (i statsCacheIndex) DiskKeys() []string {
+	return i.s.disk.Keys()
 }
 
 func (i statsCacheIndex) DiskKeyCount() int {

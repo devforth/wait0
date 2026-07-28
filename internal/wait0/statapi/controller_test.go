@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"wait0/internal/wait0/auth"
+	"wait0/internal/wait0/proxy"
 )
 
 type fakeRuntime struct {
@@ -195,6 +196,39 @@ func TestHandle_MetricsPayload(t *testing.T) {
 	}
 	if len(emptyRule["top_largest_responses"].([]any)) != 0 {
 		t.Fatalf("empty rule should have empty response rankings: %v", emptyRule)
+	}
+}
+
+func TestBuildSnapshot_FoldsVariantChildrenIntoOneLogicalURL(t *testing.T) {
+	childMobile := proxy.JoinVariantCacheKey("/a", "generation", []string{"mobile", "CA"})
+	childDesktop := proxy.JoinVariantCacheKey("/a", "generation", []string{"desktop", "CA"})
+	rt := &fakeRuntime{
+		ram: map[string]EntryMeta{
+			"/a":        {Size: 25, StorageSize: 50, VariantKind: "manifest"},
+			childMobile: {Size: 100, StorageSize: 120, VariantKind: "response", VariantBaseKey: "/a"},
+		},
+		disk: map[string]EntryMeta{
+			childDesktop: {Size: 200, StorageSize: 220, VariantKind: "response", VariantBaseKey: "/a"},
+		},
+		rules: []RuleDefinition{{
+			ID:      0,
+			Match:   "PathPrefix(/)",
+			Matches: func(path string) bool { return strings.HasPrefix(path, "/") },
+		}},
+	}
+
+	got := NewController(nil, rt).buildSnapshot(time.Now().UTC())
+	if got.Cache.URLsTotal != 1 {
+		t.Fatalf("urls_total = %d, want 1 logical root", got.Cache.URLsTotal)
+	}
+	if got.Cache.ResponsesSizeBytesTotal != 300 {
+		t.Fatalf("response bytes = %d, want concrete children only", got.Cache.ResponsesSizeBytesTotal)
+	}
+	if got.Cache.ResponseSizeBytes != (MetricTriplet{Min: 100, Avg: 150, Max: 200}) {
+		t.Fatalf("response sizes = %+v", got.Cache.ResponseSizeBytes)
+	}
+	if got.Rules[0].URLs != 1 || got.Rules[0].Responses != 2 {
+		t.Fatalf("rule counts = urls:%d responses:%d", got.Rules[0].URLs, got.Rules[0].Responses)
 	}
 }
 

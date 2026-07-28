@@ -62,3 +62,22 @@ func TestHasAnyCookie(t *testing.T) {
 		})
 	}
 }
+
+func TestHasAnyRequestHeader(t *testing.T) {
+	r := httptest.NewRequest("GET", "http://wait0.local", nil)
+	r.Header["Authorization"] = []string{""}
+	r.Header["x-preview"] = []string{"1"}
+
+	if !HasAnyRequestHeader(r, []string{" authorization "}) {
+		t.Fatal("expected an empty Authorization header to count as present")
+	}
+	if !HasAnyRequestHeader(r, []string{"X-Preview"}) {
+		t.Fatal("expected case-insensitive header match")
+	}
+	if !HasAnyRequestHeader(r, []string{"Host"}) {
+		t.Fatal("expected request Host to count as present")
+	}
+	if HasAnyRequestHeader(r, []string{"X-Missing"}) {
+		t.Fatal("unexpected missing-header match")
+	}
+}

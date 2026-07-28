@@ -27,6 +27,9 @@ type EntryMeta struct {
 	Inactive            bool
 	DiscoveredBy        string
 	LastRefreshUnixNano int64
+	VariantKind         string
+	VariantBaseKey      string
+	VariantValues       []string
 }
 
 type RuleDefinition struct {
@@ -212,11 +215,30 @@ func (c *Controller) buildSnapshot(now time.Time) response {
 
 	sitemapDiscovered := 0
 	sitemapCrawled := 0
+	logicalKeys := make(map[string]struct{}, len(keys))
+	sitemapByBase := make(map[string]struct {
+		discovered bool
+		crawled    bool
+	})
 
 	for key := range keys {
 		meta, ok := ram[key]
 		if !ok {
 			meta = disk[key]
+		}
+
+		baseKey := proxy.BaseCacheKey(key)
+		logicalKeys[baseKey] = struct{}{}
+		if strings.EqualFold(strings.TrimSpace(meta.DiscoveredBy), "sitemap") {
+			state := sitemapByBase[baseKey]
+			state.discovered = true
+			if meta.VariantKind != "manifest" && !meta.Inactive {
+				state.crawled = true
+			}
+			sitemapByBase[baseKey] = state
+		}
+		if meta.VariantKind == "manifest" {
+			continue
 		}
 
 		sz := uint64(0)
@@ -231,14 +253,14 @@ func (c *Controller) buildSnapshot(now time.Time) response {
 		if sz > respMax {
 			respMax = sz
 		}
-
-		if strings.EqualFold(strings.TrimSpace(meta.DiscoveredBy), "sitemap") {
+	}
+	for _, state := range sitemapByBase {
+		if state.discovered {
 			sitemapDiscovered++
-			if !meta.Inactive {
-				sitemapCrawled++
-			}
 		}
-
+		if state.crawled {
+			sitemapCrawled++
+		}
 	}
 	rules := buildRulePayloads(now, ruleDefinitions, warmupLoops, ram, disk, keys)
 
@@ -270,7 +292,7 @@ func (c *Controller) buildSnapshot(now time.Time) response {
 		GeneratedAt:        now.Format(time.RFC3339Nano),
 		SnapshotTTLSeconds: int(snapshotTTL / time.Second),
 		Cache: cachePayload{
-			URLsTotal:               len(keys),
+			URLsTotal:               len(logicalKeys),
 			ResponsesSizeBytesTotal: totalSize,
 			ResponseSizeBytes:       respStats,
 		},
@@ -309,25 +331,42 @@ func buildRulePayloads(
 		}
 	}
 	for key := range keys {
-		idx := matchingRuleIndex(definitions, proxy.CacheKeyPath(key))
+		baseKey := proxy.BaseCacheKey(key)
+		idx := matchingRuleIndex(definitions, proxy.CacheKeyPath(baseKey))
 		if idx < 0 {
 			continue
 		}
-		aggregations[idx].urlCount++
 		meta, ok := ram[key]
 		if !ok {
 			meta = disk[key]
+		}
+		if meta.VariantKind == "manifest" {
+			continue
 		}
 		if meta.Inactive {
 			continue
 		}
 		item := urlSizePayload{
-			URL:       key,
+			URL:       baseKey,
 			SizeBytes: nonNegativeSize(meta.Size),
 		}
 		aggregations[idx].responseCount++
 		aggregations[idx].topLargest = addResponseSize(aggregations[idx].topLargest, item, false)
 		aggregations[idx].topSmallest = addResponseSize(aggregations[idx].topSmallest, item, true)
+	}
+
+	logicalByRule := make([]map[string]struct{}, len(definitions))
+	for i := range logicalByRule {
+		logicalByRule[i] = make(map[string]struct{})
+	}
+	for key := range keys {
+		baseKey := proxy.BaseCacheKey(key)
+		if idx := matchingRuleIndex(definitions, proxy.CacheKeyPath(baseKey)); idx >= 0 {
+			logicalByRule[idx][baseKey] = struct{}{}
+		}
+	}
+	for i := range aggregations {
+		aggregations[i].urlCount = len(logicalByRule[i])
 	}
 
 	out := make([]rulePayload, 0, len(definitions))

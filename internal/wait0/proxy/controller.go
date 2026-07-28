@@ -11,10 +11,11 @@ type Runtime interface {
 	LoadRAM(key string, now int64) (Entry, bool)
 	LoadDisk(key string) (Entry, bool)
 	PromoteRAM(key string, ent Entry)
+	ResolveVariant(manifest Entry, r *http.Request) (key string, values []string, err error)
 	DeleteKey(key string)
 	FetchFromOrigin(r *http.Request) (Entry, bool, string, error)
-	Store(key string, ent Entry)
-	RevalidateAsync(key, path, query string)
+	Store(key string, r *http.Request, ent Entry) (Entry, error)
+	RevalidateAsync(key, path, query string, headers http.Header, host string)
 	DebugHeaders() DebugHeaderSet
 	WriteEntryWithStats(w http.ResponseWriter, ent Entry, wait0, reason string)
 }
@@ -50,6 +51,10 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 			c.proxyPass(w, r, "ignore-by-cookie", "bypass-cookie")
 			return
 		}
+		if HasAnyRequestHeader(r, rule.BypassWhenRequestHeaders) {
+			c.proxyPass(w, r, "ignore-by-request-header", "bypass-request-header")
+			return
+		}
 	}
 
 	if r.Method != http.MethodGet {
@@ -58,22 +63,41 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().Unix()
-	if ent, ok := c.rt.LoadRAM(key, now); ok {
-		if !ent.Inactive {
-			c.rt.WriteEntryWithStats(w, ent, "hit", "")
-			if rule != nil && rule.Expiration > 0 && IsStale(ent, rule.Expiration) {
-				c.rt.RevalidateAsync(key, path, cacheQuery)
-			}
-			return
+	root, ok := c.rt.LoadRAM(key, now)
+	if !ok {
+		if diskEnt, diskOK := c.rt.LoadDisk(key); diskOK {
+			c.rt.PromoteRAM(key, diskEnt)
+			root, ok = diskEnt, true
 		}
 	}
 
-	if ent, ok := c.rt.LoadDisk(key); ok {
-		if !ent.Inactive {
-			c.rt.PromoteRAM(key, ent)
-			c.rt.WriteEntryWithStats(w, ent, "hit", "")
-			if rule != nil && rule.Expiration > 0 && IsStale(ent, rule.Expiration) {
-				c.rt.RevalidateAsync(key, path, cacheQuery)
+	deleteKey := key
+	if ok && !root.Inactive {
+		selectedKey := key
+		selected := root
+		if root.VariantKind == "manifest" {
+			var err error
+			selectedKey, _, err = c.rt.ResolveVariant(root, r)
+			if err != nil {
+				// A declaration can be fixed by the next origin response, so an
+				// evaluation failure is a cache miss rather than a gateway error.
+				deleteKey = ""
+			} else {
+				deleteKey = selectedKey
+				selected, ok = c.rt.LoadRAM(selectedKey, now)
+				if !ok {
+					if diskEnt, diskOK := c.rt.LoadDisk(selectedKey); diskOK {
+						c.rt.PromoteRAM(selectedKey, diskEnt)
+						selected, ok = diskEnt, true
+					}
+				}
+			}
+		}
+		if ok && selected.VariantKind != "manifest" && !selected.Inactive {
+			c.rt.WriteEntryWithStats(w, selected, "hit", "")
+			if rule != nil && rule.Expiration > 0 && IsStale(selected, rule.Expiration) {
+				revalidationHeaders := CloneHeader(selected.VariantRequestHeaders)
+				c.rt.RevalidateAsync(selectedKey, path, cacheQuery, revalidationHeaders, revalidationHeaders.Get("Host"))
 			}
 			return
 		}
@@ -86,7 +110,9 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if statusKind == "ignore-by-status" {
-		c.rt.DeleteKey(key)
+		if deleteKey != "" {
+			c.rt.DeleteKey(deleteKey)
+		}
 		c.rt.WriteEntryWithStats(w, respEnt, "ignore-by-status", "non-cacheable-status")
 		return
 	}
@@ -104,8 +130,12 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c.rt.Store(key, respEnt)
-	c.rt.WriteEntryWithStats(w, respEnt, "miss", "")
+	storedEnt, err := c.rt.Store(key, r, respEnt)
+	if err != nil {
+		c.rt.WriteEntryWithStats(w, respEnt, "bypass", "cache-variant-expression-error")
+		return
+	}
+	c.rt.WriteEntryWithStats(w, storedEnt, "miss", "")
 }
 
 func (c *Controller) proxyPass(w http.ResponseWriter, r *http.Request, wait0, reason string) {

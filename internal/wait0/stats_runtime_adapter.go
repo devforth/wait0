@@ -92,6 +92,9 @@ func toStatMeta(in map[string]cache.EntryMeta) map[string]statapi.EntryMeta {
 			Inactive:            v.Inactive,
 			DiscoveredBy:        v.DiscoveredBy,
 			LastRefreshUnixNano: v.LastRefreshUnixNano,
+			VariantKind:         v.VariantKind,
+			VariantBaseKey:      v.VariantBaseKey,
+			VariantValues:       append([]string(nil), v.VariantValues...),
 		}
 	}
 	return out

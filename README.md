@@ -133,9 +133,10 @@ Notes:
 
 | Guide | Description |
 |-------|-------------|
-| [Usage and configuration](#usage-and-configuration) | [How wait0 works](#how-wait0-works), [query parameters](#query-parameter-caching), [sitemap warmup](#sitemap-warmup), and the [config reference](#config-file-reference) |
+| [Usage and configuration](#usage-and-configuration) | [How wait0 works](#how-wait0-works), [cache bypass](#cache-bypass), [cache variants](#cache-variants), [query parameters](#query-parameter-caching), [sitemap warmup](#sitemap-warmup), and the [config reference](#config-file-reference) |
 | [For Developers](docs/for-developers.md) | Build/test commands, config reference, runtime options |
 | [API Endpoints](docs/api-endpoints.md) | Proxy behavior, invalidation API, schemas, status codes |
+| [Cache variant complexity](docs/cache-variant-complexity.md) | Root/subkey storage model and operation complexity |
 
 ## Usage and configuration
 
@@ -145,9 +146,85 @@ wait0 checks RAM, then disk, and waits for the origin only on a cache miss. A ca
 
 wait0 caches only `GET` responses with a `2xx` status, an allowed `Content-Type`, and no `Cache-Control: no-cache` or `no-store` directive. `cachableContentType` defaults to `text/html` and `application/xhtml+xml`, including values with parameters such as `text/html; charset=utf-8`. This keeps wait0 focused on controllable dynamic SWR; static assets should normally be cached by a CDN, Nginx, and browser caching.
 
-An origin response that fails these checks is served as `X-Wait0: bypass` without being stored, with `X-Wait0-Reason` explaining why. If background revalidation receives a disallowed content type, either cache-control directive, or a non-`2xx` status, the existing entry is deleted; a network error leaves it available. A stale response is reported as `X-Wait0: hit`.
-
 `logging.debug_headers` controls wait0 diagnostic response headers and the markers sent to the origin during revalidation. Omit it to enable every supported header, use a subset to select individual headers, or set `debug_headers: []` to disable all diagnostics. Functional headers such as `X-Wait0-CSRF` and origin-provided `X-Wait0-Tag` are not controlled by this option.
+
+### Cache bypass
+
+Request-side bypass rules are useful when a matching response must never be shared. They skip cache lookup, Cache-Variant evaluation, and storage:
+
+```yaml
+rules:
+  - match: PathPrefix(/admin)
+    bypass: true
+
+  - match: PathPrefix(/)
+    bypassWhenCookies: ['sessionid']
+    bypassWhenRequestHeaders: ['Authorization']
+```
+
+`bypass: true` applies to every request matching the rule. `bypassWhenCookies` applies when any named cookie is present. `bypassWhenRequestHeaders` applies when any named request header is present; header names are matched case-insensitively, and an explicitly present empty header still triggers the bypass. Bypassed and non-`GET` requests are sent upstream as bodyless `GET` requests.
+
+When diagnostic headers are enabled, request-side decisions are reported as follows:
+
+| Condition | `X-Wait0` | `X-Wait0-Reason` |
+|-----------|-----------|------------------|
+| `bypass: true` | `bypass` | `bypass-rule` |
+| Cookie listed by `bypassWhenCookies` is present | `ignore-by-cookie` | `bypass-cookie` |
+| Header listed by `bypassWhenRequestHeaders` is present | `ignore-by-request-header` | `bypass-request-header` |
+| Request method is not `GET` | `bypass` | `non-get-method` |
+
+wait0 can also fetch an origin response but decline to store it:
+
+| Origin result | `X-Wait0` | `X-Wait0-Reason` |
+|---------------|-----------|------------------|
+| `Cache-Control` contains `no-cache` or `no-store` | `bypass` | `non-cacheable-cache-control` |
+| `Content-Type` is missing, malformed, or not allowed by `cachableContentType` | `bypass` | `non-cacheable-content-type` |
+| A `Cache-Variant` declaration cannot compile or evaluate | `bypass` | `cache-variant-expression-error` |
+| Status is not `2xx` | `ignore-by-status` | `non-cacheable-status` |
+| Origin request fails | `bad-gateway` | `origin-error` |
+
+A non-cacheable miss response is returned to the client without being stored. If background revalidation receives a disallowed content type, either cache-control directive, or a non-`2xx` status, the existing entry is deleted; a network error leaves it available. A stale cached response is still reported as `X-Wait0: hit`.
+
+### Cache variants
+
+Cache variants are useful when an SSR origin renders the same URL differently by country, region, device, cookie, or another request header. The origin declares one or more `Cache-Variant` response headers containing [Expr](https://github.com/expr-lang/expr) expressions:
+
+```
+response.append_header(
+  'Cache-Variant',
+  `"header('User-Agent') matches '(?i)(Android.*Mobile|iPhone|iPod|IEMobile|Windows Phone|Opera Mini)' ? 'mobile' : 'desktop'"`
+)
+
+response.append_header(
+  'Cache-Variant',
+  `"let c = header('CF-IPCountry', 'XX'); c == 'CA' && header('CF-Region-Code') == 'ON' ? 'CA-ON' : c"`
+)
+```
+
+Each expression must return a string. Header names and fallbacks must be string literals. `header('Name')` requires the request header to exist; `header('Name', 'fallback')` supplies a value when it does not. The optional outer double quotes shown above are accepted. Multiple declarations are evaluated in response-header order and form a Cartesian variant family: the examples can produce keys such as `mobile|CA-ON` and `desktop|US`. Combinations are created lazily as requests discover them.
+
+`X-Wait0-Cache-Variant-Key` reports the ordered values joined by `|`. Origin `Cache-Variant` headers remain visible in the client response for diagnosis. Invalid declarations use the expression-error behavior listed under [Cache bypass](#cache-bypass).
+
+Discovered variants are monitored and warmed at their original URL using the request-header values that selected them. For example, discovering `mobile|CA` on `/a` adds a warmup target for `/a`; internal subcache keys are never requested from the origin.
+
+You can seed additional request-header combinations on every warmup loop:
+
+```yaml
+rules:
+  - match: PathPrefix(/)
+    warmUp:
+      pauseBetweenRuns: '10s'
+      maxRequestsAtATime: 20
+    warmupRequestHeaderPresets:
+      CF-IPCountry: ['CA', 'US', 'UA']
+      User-Agent: ['iPad', 'Mozilla']
+```
+
+Preset values form a Cartesian product, so this example can make six requests per URL in addition to any distinct discovered variants. Known variant keys are deduplicated. This option can produce substantial origin traffic and cache growth; `warmUp.maxRequestsAtATime` still limits concurrency.
+
+All request headers are allowed, including `Cookie` and authorization headers. wait0 persists the values of headers referenced by `header(...)` so a discovered variant can be refreshed later. Choosing sensitive headers is therefore the operator's responsibility: restrict cache/disk access and avoid expressions that retain secrets unless that storage is acceptable.
+
+See [Cache variant complexity](docs/cache-variant-complexity.md) for the root-manifest, subkey, family, and warmup complexity guarantees.
 
 ### Query parameter caching
 
@@ -236,6 +313,8 @@ rules:
     priority: 2
     # Bypasses cache when any named cookie is present.
     bypassWhenCookies: ['sessionid']
+    # Bypasses cache when any named request header is present.
+    bypassWhenRequestHeaders: ['Authorization']
     # Exact media types eligible for wait0 caching. Parameters such as charset
     # are ignored. Defaults to the two values shown here.
     cachableContentType: ['text/html', 'application/xhtml+xml']
@@ -249,6 +328,10 @@ rules:
       pauseBetweenRuns: '10s'
       # Maximum concurrent requests for this warmup rule.
       maxRequestsAtATime: 20
+    # Optional Cartesian header presets used on every warmup loop.
+    warmupRequestHeaderPresets:
+      CF-IPCountry: ['CA', 'US', 'UA']
+      User-Agent: ['iPad', 'Mozilla']
 
 logging:
   # Diagnostic response headers and origin revalidation markers. Omit this
@@ -261,6 +344,7 @@ logging:
     - X-Wait0-Discovered-By
     - X-Wait0-Revalidate-At
     - X-Wait0-Revalidate-Entropy
+    - X-Wait0-Cache-Variant-Key
   # To disable every diagnostic header, replace the list above with:
   # debug_headers: []
   # Logs a stats snapshot at this interval; omit to disable.
@@ -291,6 +375,7 @@ If you do not restart between deploys, proactively refresh cache using invalidat
 
 - Request pipeline: RAM cache -> disk cache -> origin.
 - Cache key is path-only by default.
+- A variant URL stores a constant-size root manifest; evaluated values select response subkeys without scanning sibling variants.
 - Rule field `varyByQueryParams[]` opts specific query parameters into cache identity for matching paths.
 - Query parameters not listed in `varyByQueryParams[]` and all fragments are ignored for cache identity.
 - Only `GET` requests are cache candidates.
@@ -299,3 +384,4 @@ If you do not restart between deploys, proactively refresh cache using invalidat
 - Rule `expiration` marks entries stale but does not evict them; stale responses are served immediately and revalidation is scheduled on a best-effort basis.
 - On a cache-path miss or revalidation, an origin non-`2xx` is not cached and any existing key is evicted.
 - Invalidation is asynchronous: accept request -> resolve keys by `paths` and `tags` -> delete keys -> recrawl in background. Path invalidation clears all cached query-aware variants for that path.
+- Warmup monitors discovered cache variants and may expand `warmupRequestHeaderPresets` into additional Cartesian request-header combinations.

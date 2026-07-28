@@ -35,8 +35,17 @@ type Runtime interface {
 	CachedKeys() []string
 	KeyTags(key string) []string
 	HasKey(key string) bool
+	TargetForKey(key string) Target
 	DeleteKey(key string)
-	RecrawlKey(ctx context.Context, key string) string
+	RecrawlTarget(ctx context.Context, target Target) string
+}
+
+type Target struct {
+	Key     string
+	Path    string
+	Query   string
+	Headers http.Header
+	Host    string
 }
 
 type request struct {
@@ -241,8 +250,10 @@ func (c *Controller) processJob(workerID int, job Job) {
 	}
 
 	invalidated := 0
+	targets := make([]Target, 0, len(resolved))
 	for _, key := range resolved {
 		had := c.rt.HasKey(key)
+		targets = append(targets, c.rt.TargetForKey(key))
 		c.rt.DeleteKey(key)
 		if had {
 			invalidated++
@@ -259,14 +270,14 @@ func (c *Controller) processJob(workerID int, job Job) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
-	for _, key := range resolved {
+	for _, target := range targets {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(k string) {
+		go func(target Target) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			kind := c.rt.RecrawlKey(ctx, k)
+			kind := c.rt.RecrawlTarget(ctx, target)
 			cancel()
 			mu.Lock()
 			if kind == "updated" || kind == "unchanged" {
@@ -276,7 +287,7 @@ func (c *Controller) processJob(workerID int, job Job) {
 				recrawlErrs++
 			}
 			mu.Unlock()
-		}(key)
+		}(target)
 	}
 	wg.Wait()
 

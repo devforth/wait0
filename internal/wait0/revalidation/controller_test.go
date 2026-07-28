@@ -29,6 +29,7 @@ type fakeRuntime struct {
 	random       string
 	contentTypes []string
 	doFunc       func(req *http.Request) (*http.Response, error)
+	resolveFunc  func(string, http.Header, string) (string, bool, error)
 
 	putCalls    map[string]Entry
 	deleteCalls []string
@@ -52,10 +53,11 @@ func (f *fakeRuntime) Peek(key string) (Entry, bool) {
 	return ent, ok
 }
 
-func (f *fakeRuntime) Put(key string, ent Entry) {
+func (f *fakeRuntime) StoreResponse(target Target, ent Entry) (Entry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.putCalls[key] = ent
+	f.putCalls[target.Key] = ent
+	return ent, nil
 }
 
 func (f *fakeRuntime) Delete(key string) {
@@ -102,6 +104,13 @@ func (f *fakeRuntime) CachableContentTypes(string) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.contentTypes...)
+}
+
+func (f *fakeRuntime) ResolveVariantTarget(baseKey string, headers http.Header, host string) (string, bool, error) {
+	if f.resolveFunc != nil {
+		return f.resolveFunc(baseKey, headers, host)
+	}
+	return baseKey, false, nil
 }
 
 func (f *fakeRuntime) SendRevalidateMarkers() bool {
@@ -151,7 +160,7 @@ func TestController_Async_DropsWhenQueueIsFull(t *testing.T) {
 	var wg sync.WaitGroup
 	c := NewController(rt, bgSem, make(chan struct{}), &wg, false, nil, nil, nil)
 
-	c.Async("/x", "/x", "", "user")
+	c.Async(Target{Key: "/x", Path: "/x"}, "user")
 
 	wg.Wait()
 	if len(rt.requests) != 0 {
@@ -168,7 +177,7 @@ func TestController_Async_ExecutesOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	c := NewController(rt, bgSem, make(chan struct{}), &wg, false, nil, nil, nil)
 
-	c.Async("/p", "/p", "q=1", "user")
+	c.Async(Target{Key: "/p", Path: "/p", Query: "q=1"}, "user")
 	wg.Wait()
 
 	if len(rt.requests) != 1 {
@@ -314,7 +323,7 @@ func TestController_Once_Branches(t *testing.T) {
 			unchangedLog := &captureLogger{}
 			c := NewController(rt, make(chan struct{}, 1), make(chan struct{}), &wg, false, nil, unchangedLog, nil)
 
-			res := c.Once(context.Background(), "/page", "/page", "a=1", tc.by)
+			res := c.Once(context.Background(), Target{Key: "/page", Path: "/page", Query: "a=1"}, tc.by)
 
 			if res.Kind != tc.wantKind {
 				t.Fatalf("kind = %q, want %q", res.Kind, tc.wantKind)
@@ -351,7 +360,7 @@ func TestController_Once_DebugHeadersCanDisableOriginMarkers(t *testing.T) {
 
 	var wg sync.WaitGroup
 	c := NewController(rt, make(chan struct{}, 1), make(chan struct{}), &wg, false, nil, nil, nil)
-	res := c.Once(context.Background(), "/page", "/page", "", "user")
+	res := c.Once(context.Background(), Target{Key: "/page", Path: "/page"}, "user")
 	if res.Kind != "updated" {
 		t.Fatalf("kind = %q, want updated", res.Kind)
 	}
@@ -405,10 +414,68 @@ func TestController_KeysAndAllKeysSnapshot(t *testing.T) {
 	}
 }
 
+func TestController_WarmupTargets_ReplaysDiscoveredVariant(t *testing.T) {
+	rt := newFakeRuntime()
+	childKey := proxy.JoinVariantCacheKey("/a", "generation", []string{"mobile", "CA"})
+	rt.access[childKey] = 10
+	rt.peekMap[childKey] = Entry{
+		VariantKind:    "response",
+		VariantBaseKey: "/a",
+		VariantValues:  []string{"mobile", "CA"},
+		VariantRequestHeaders: http.Header{
+			"User-Agent":   {"iPad"},
+			"Cf-Ipcountry": {"CA"},
+		},
+	}
+
+	var wg sync.WaitGroup
+	c := NewController(rt, make(chan struct{}, 1), make(chan struct{}), &wg, false, nil, nil, nil)
+	targets := c.WarmupTargets(WarmRule{Matches: func(string) bool { return true }})
+	if len(targets) != 1 {
+		t.Fatalf("targets = %d, want 1", len(targets))
+	}
+	target := targets[0]
+	if target.Key != childKey || target.Path != "/a" || target.Query != "" {
+		t.Fatalf("target = %+v", target)
+	}
+	if target.Headers.Get("User-Agent") != "iPad" || target.Headers.Get("CF-IPCountry") != "CA" {
+		t.Fatalf("replay headers = %v", target.Headers)
+	}
+}
+
+func TestController_WarmupTargets_ExpandsHeaderPresetCartesianProduct(t *testing.T) {
+	rt := newFakeRuntime()
+	rt.access["/a"] = 10
+	rt.peekMap["/a"] = Entry{Status: http.StatusOK}
+
+	var wg sync.WaitGroup
+	c := NewController(rt, make(chan struct{}, 1), make(chan struct{}), &wg, false, nil, nil, nil)
+	targets := c.WarmupTargets(WarmRule{
+		Matches:           func(string) bool { return true },
+		PresetHeaderNames: []string{"Cf-Ipcountry", "User-Agent"},
+		RequestHeaderPresets: map[string][]string{
+			"Cf-Ipcountry": {"CA", "US", "UA"},
+			"User-Agent":   {"iPad", "Mozilla"},
+		},
+	})
+	if len(targets) != 7 {
+		t.Fatalf("targets = %d, want existing target + 6 presets", len(targets))
+	}
+	seen := map[string]bool{}
+	for _, target := range targets[1:] {
+		seen[target.Headers.Get("CF-IPCountry")+"|"+target.Headers.Get("User-Agent")] = true
+	}
+	for _, want := range []string{"CA|iPad", "CA|Mozilla", "US|iPad", "US|Mozilla", "UA|iPad", "UA|Mozilla"} {
+		if !seen[want] {
+			t.Fatalf("missing preset combination %q in %v", want, seen)
+		}
+	}
+}
+
 func TestController_WarmupGroupLoop_StopAndLogs(t *testing.T) {
 	rt := newFakeRuntime()
 	rt.access = map[string]int64{"/x?page=1": 10, "/y": 9}
-	rt.peekMap["/x"] = Entry{Hash32: 1}
+	rt.peekMap["/x?page=1"] = Entry{Hash32: 1}
 	rt.peekMap["/y"] = Entry{Hash32: 2}
 	rt.doFunc = func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path == "/y" {

@@ -24,10 +24,14 @@ type fakeRuntime struct {
 	originStatus    string
 	originErr       error
 
-	promoted     []string
-	deleted      []string
-	stored       []string
-	revalidated  []struct{ key, path, query string }
+	promoted    []string
+	deleted     []string
+	stored      []string
+	revalidated []struct {
+		key, path, query string
+		headers          http.Header
+		host             string
+	}
 	writeWait0   []string
 	writeReasons []string
 	debugHeaders DebugHeaderSet
@@ -45,16 +49,27 @@ func (f *fakeRuntime) LoadDisk(string) (Entry, bool) { return f.diskEnt, f.diskO
 
 func (f *fakeRuntime) PromoteRAM(key string, _ Entry) { f.promoted = append(f.promoted, key) }
 
+func (f *fakeRuntime) ResolveVariant(_ Entry, _ *http.Request) (string, []string, error) {
+	return "", nil, nil
+}
+
 func (f *fakeRuntime) DeleteKey(key string) { f.deleted = append(f.deleted, key) }
 
 func (f *fakeRuntime) FetchFromOrigin(*http.Request) (Entry, bool, string, error) {
 	return f.originEnt, f.originCacheable, f.originStatus, f.originErr
 }
 
-func (f *fakeRuntime) Store(key string, _ Entry) { f.stored = append(f.stored, key) }
+func (f *fakeRuntime) Store(key string, _ *http.Request, ent Entry) (Entry, error) {
+	f.stored = append(f.stored, key)
+	return ent, nil
+}
 
-func (f *fakeRuntime) RevalidateAsync(key, path, query string) {
-	f.revalidated = append(f.revalidated, struct{ key, path, query string }{key: key, path: path, query: query})
+func (f *fakeRuntime) RevalidateAsync(key, path, query string, headers http.Header, host string) {
+	f.revalidated = append(f.revalidated, struct {
+		key, path, query string
+		headers          http.Header
+		host             string
+	}{key: key, path: path, query: query, headers: CloneHeader(headers), host: host})
 }
 
 func (f *fakeRuntime) DebugHeaders() DebugHeaderSet { return f.debugHeaders }
@@ -106,6 +121,17 @@ func TestController_Handle_BypassPaths(t *testing.T) {
 			}(),
 			want:   "ignore-by-cookie",
 			reason: "bypass-cookie",
+		},
+		{
+			name: "request header bypass",
+			rule: &Rule{BypassWhenRequestHeaders: []string{"Authorization"}},
+			req: func() *http.Request {
+				r := httptest.NewRequest(http.MethodGet, "http://wait0.local/header", nil)
+				r.Header.Set("Authorization", "Bearer secret")
+				return r
+			}(),
+			want:   "ignore-by-request-header",
+			reason: "bypass-request-header",
 		},
 		{
 			name:   "non get bypass",
@@ -202,6 +228,43 @@ func TestController_Handle_QueryAwareRevalidationUsesCanonicalQuery(t *testing.T
 	call := rt.revalidated[0]
 	if call.key != "/path?page=1" || call.path != "/path" || call.query != "page=1" {
 		t.Fatalf("revalidate call = %+v", call)
+	}
+}
+
+func TestController_Handle_VariantRevalidationUsesOnlyPersistedSelectorHeaders(t *testing.T) {
+	ent := Entry{
+		Status:        http.StatusOK,
+		Body:          []byte("cached"),
+		StoredAt:      time.Now().Add(-2 * time.Minute).Unix(),
+		VariantKind:   "response",
+		VariantValues: []string{"pro"},
+		VariantRequestHeaders: http.Header{
+			"Cookie": {"plan=pro"},
+			"Host":   {"tenant.example"},
+		},
+	}
+	rt := &fakeRuntime{
+		rule:   &Rule{Expiration: time.Second},
+		ramEnt: ent,
+		ramOK:  true,
+	}
+	c := NewController(rt)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "http://wait0.local/path", nil)
+	r.Header.Set("Authorization", "Bearer request-only")
+	r.Header.Set("X-Irrelevant", "drop-me")
+
+	c.Handle(w, r)
+
+	if len(rt.revalidated) != 1 {
+		t.Fatalf("revalidate calls = %d, want 1", len(rt.revalidated))
+	}
+	call := rt.revalidated[0]
+	if call.headers.Get("Cookie") != "plan=pro" || call.host != "tenant.example" {
+		t.Fatalf("selector headers/host = %v %q", call.headers, call.host)
+	}
+	if call.headers.Get("Authorization") != "" || call.headers.Get("X-Irrelevant") != "" {
+		t.Fatalf("unreferenced request headers leaked into refresh: %v", call.headers)
 	}
 }
 

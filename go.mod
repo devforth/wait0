@@ -3,6 +3,7 @@ module wait0
 go 1.22
 
 require (
+	github.com/expr-lang/expr v1.17.8
 	github.com/syndtr/goleveldb v1.0.0
 	gopkg.in/yaml.v3 v3.0.1
 )

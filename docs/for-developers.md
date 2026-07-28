@@ -137,12 +137,14 @@ For dashboard:
 | `priority` | no | Rules are sorted ascending by priority |
 | `bypass` | no | For matching paths, bypass cache completely |
 | `bypassWhenCookies[]` | no | If any listed cookie exists, bypass cache |
+| `bypassWhenRequestHeaders[]` | no | If any listed request header is present, bypass cache; matching is case-insensitive and empty values count |
 | `cachableContentType[]` | no | Exact cache-eligible media types; defaults to `text/html` and `application/xhtml+xml`; parameters are ignored |
 | `varyByQueryParams[]` | no | Query params that should participate in cache identity for matching paths |
 | `expiration` | no | Duration for stale check and async revalidation |
 | `warmUp.pauseBetweenRuns` | with `warmUp` | Pause after a complete loop before loading the next URL snapshot; must be `> 0`; `10s` is recommended for fast full-capacity reruns |
 | `warmUp.runEvery` | deprecated | Legacy alias for `pauseBetweenRuns`; logs a replacement warning and uses the new pause-after-completion behavior |
 | `warmUp.maxRequestsAtATime` | with `warmUp` | Must be `> 0` |
+| `warmupRequestHeaderPresets` | no | Map of header names to non-empty value arrays; requires `warmUp` and expands their Cartesian product on every loop |
 
 ## `urlsDiscover`
 
@@ -157,7 +159,7 @@ For dashboard:
 
 | Field | Type | Notes |
 |-------|------|------|
-| `debug_headers` | string array | Diagnostic headers to emit; omitted enables all seven supported headers, while an explicit `[]` disables all |
+| `debug_headers` | string array | Diagnostic headers to emit; omitted enables all eight supported headers, while an explicit `[]` disables all |
 | `log_stats_every` | duration | Enables periodic stats logging (`> 0`) |
 | `log_warmup` | bool | Emits warmup batch summaries |
 | `log_url_autodiscover` | bool | Emits per-sitemap discovery logs |
@@ -170,17 +172,21 @@ For dashboard:
 - Query params not listed in `varyByQueryParams[]` and all fragments are ignored for cache identity.
 - Only `GET` requests are cache-eligible.
 - Bypassed and non-`GET` requests are sent upstream as `GET` without the original body.
+- `bypassWhenRequestHeaders` skips lookup and storage when any configured header is present; use it for headers such as `Authorization` that make a response unsafe to share.
 - Non-2xx origin responses are not cached and existing cached key is removed.
 - Origin responses whose media type is not in `cachableContentType` are served but not stored; background revalidation deletes an existing entry if its new media type is disallowed.
 - Keep static assets in CDN, Nginx, and browser caches; wait0 defaults to caching only dynamic HTML/XHTML SWR responses.
 - Origin `2xx` responses with `Cache-Control: no-cache` or `no-store` are not stored; either directive received during revalidation deletes the existing entry.
 - Warmup loops never overlap: wait0 completes the current rule snapshot, waits `pauseBetweenRuns`, then loads a fresh snapshot.
-- `logging.debug_headers` may select any of `X-Wait0`, `X-Wait0-Reason`, `X-Wait0-Revalidated-At`, `X-Wait0-Revalidated-By`, `X-Wait0-Discovered-By`, `X-Wait0-Revalidate-At`, and `X-Wait0-Revalidate-Entropy`.
+- Variant warmup replays the original URL with the referenced request headers saved on each discovered concrete response. `warmupRequestHeaderPresets` adds its full Cartesian product and can substantially increase cache entries and origin traffic.
+- `Cache-Variant` expressions may reference every request header, including cookies and authorization. Referenced values are persisted for later refresh, so protecting sensitive values is the operator's responsibility.
+- `logging.debug_headers` may select any of `X-Wait0`, `X-Wait0-Reason`, `X-Wait0-Revalidated-At`, `X-Wait0-Revalidated-By`, `X-Wait0-Discovered-By`, `X-Wait0-Revalidate-At`, `X-Wait0-Revalidate-Entropy`, and `X-Wait0-Cache-Variant-Key`.
 - Omit `logging.debug_headers` to enable all diagnostics; set `debug_headers: []` to disable all of them.
-- `X-Wait0` response header identifies behavior (`hit`, `miss`, `bypass`, `ignore-by-cookie`, `ignore-by-status`, `bad-gateway`).
+- `X-Wait0` response header identifies behavior (`hit`, `miss`, `bypass`, `ignore-by-cookie`, `ignore-by-request-header`, `ignore-by-status`, `bad-gateway`).
 - `X-Wait0-Reason` identifies why a response was bypassed or failed (for example, `bypass-rule` or `non-cacheable-content-type`).
 
 ## See Also
 
 - [API Endpoints](api-endpoints.md) — auth, schemas, status codes, and examples.
+- [Cache variant complexity](cache-variant-complexity.md) — root manifests, subkeys, warmup, and family operations.
 - [README](../README.md) — product overview and quick start.

@@ -154,7 +154,7 @@ func (c *RAM) MetaSnapshot() map[string]EntryMeta {
 		if lastRefresh <= 0 && it.ent.StoredAt > 0 {
 			lastRefresh = it.ent.StoredAt * int64(time.Second)
 		}
-		out[k] = EntryMeta{
+		meta := EntryMeta{
 			Size:                it.statsSize,
 			StorageSize:         it.size,
 			Inactive:            it.ent.Inactive,
@@ -162,6 +162,12 @@ func (c *RAM) MetaSnapshot() map[string]EntryMeta {
 			LastRefreshUnixNano: lastRefresh,
 			StoredAtUnix:        it.ent.StoredAt,
 		}
+		if it.ent.Variant != nil {
+			meta.VariantKind = it.ent.Variant.Kind
+			meta.VariantBaseKey = it.ent.Variant.BaseKey
+			meta.VariantValues = append([]string(nil), it.ent.Variant.Values...)
+		}
+		out[k] = meta
 	}
 	return out
 }

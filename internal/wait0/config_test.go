@@ -36,6 +36,7 @@ rules:
     bypass: true
   - match: "PathPrefix(/)"
     priority: 1
+    bypassWhenRequestHeaders: [" authorization ", "AUTHORIZATION", "X-Preview"]
     cachableContentType: [" Application/JSON; Charset=UTF-8 ", "application/json"]
     varyByQueryParams: [" page ", "lang", "page"]
     expiration: "30s"
@@ -75,6 +76,9 @@ rules:
 	}
 	if cfg.Rules[0].expDur != 30*time.Second {
 		t.Fatalf("expiration = %s", cfg.Rules[0].expDur)
+	}
+	if got := cfg.Rules[0].BypassWhenRequestHeaders; len(got) != 2 || got[0] != "Authorization" || got[1] != "X-Preview" {
+		t.Fatalf("bypassWhenRequestHeaders = %v", got)
 	}
 	wantQueryParams := []string{"lang", "page"}
 	if len(cfg.Rules[0].VaryByQueryParams) != len(wantQueryParams) {
@@ -140,6 +144,39 @@ rules:
 	}
 }
 
+func TestLoadConfig_WarmupRequestHeaderPresets(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "wait0.yaml")
+	yaml := `storage:
+  ram: {max: "1m"}
+  disk: {max: "1m"}
+server:
+  origin: "http://x"
+rules:
+  - match: "PathPrefix(/)"
+    warmUp:
+      pauseBetweenRuns: "10s"
+      maxRequestsAtATime: 2
+    warmupRequestHeaderPresets:
+      CF-IPCountry: ["CA", "US", "CA"]
+      User-Agent: ["iPad", "Mozilla"]
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	rule := cfg.Rules[0]
+	if got := rule.warmPresetHeaderNames; len(got) != 2 || got[0] != "Cf-Ipcountry" || got[1] != "User-Agent" {
+		t.Fatalf("warmPresetHeaderNames = %v", got)
+	}
+	if got := rule.WarmupRequestHeaderPresets["Cf-Ipcountry"]; len(got) != 2 || got[0] != "CA" || got[1] != "US" {
+		t.Fatalf("country presets = %v", got)
+	}
+}
+
 func TestLoadConfig_Errors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -148,9 +185,12 @@ func TestLoadConfig_Errors(t *testing.T) {
 		{name: "missing origin", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  port: 8080\nrules: []\n"},
 		{name: "bad match", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"BadExpr(/)\"\n"},
 		{name: "bad varyByQueryParams", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    varyByQueryParams: [\"page\", \" \" ]\n"},
+		{name: "bad bypass request header", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    bypassWhenRequestHeaders: [\"Bad Header\"]\n"},
 		{name: "bad cachableContentType", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    cachableContentType: [\"not a content type\"]\n"},
 		{name: "bad warmup", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    warmUp:\n      pauseBetweenRuns: \"\"\n      maxRequestsAtATime: 1\n"},
 		{name: "both warmup intervals", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    warmUp:\n      pauseBetweenRuns: \"10s\"\n      runEvery: \"10s\"\n      maxRequestsAtATime: 1\n"},
+		{name: "presets require warmup", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    warmupRequestHeaderPresets:\n      X-Test: [\"a\"]\n"},
+		{name: "preset values required", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nrules:\n  - match: \"PathPrefix(/)\"\n    warmUp:\n      pauseBetweenRuns: \"10s\"\n      maxRequestsAtATime: 1\n    warmupRequestHeaderPresets:\n      X-Test: []\n"},
 		{name: "bad log stats", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nlogging:\n  log_stats_every: \"bad\"\nrules: []\n"},
 		{name: "bad debug header", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\nlogging:\n  debug_headers: [\"X-Wait0-Unknown\"]\nrules: []\n"},
 		{name: "duplicate auth token ids", yaml: "storage:\n  ram: {max: \"1m\"}\n  disk: {max: \"1m\"}\nserver:\n  origin: \"http://x\"\n  invalidation:\n    enabled: true\nauth:\n  tokens:\n    - id: \"dup\"\n      token: \"a\"\n      scopes: [\"invalidation:write\"]\n    - id: \"dup\"\n      token: \"b\"\n      scopes: [\"invalidation:write\"]\nrules: []\n"},

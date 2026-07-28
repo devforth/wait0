@@ -44,3 +44,20 @@ func TestJoinAndSplitCacheKey(t *testing.T) {
 		t.Fatalf("CacheKeyPath() = %q", got)
 	}
 }
+
+func TestVariantCacheKeyRoundTrip(t *testing.T) {
+	base := "/path?page=1"
+	key := JoinVariantCacheKey(base, "generation", []string{"mobile|tablet", "CA-ON", ""})
+	if key == base {
+		t.Fatal("variant key must differ from base")
+	}
+	if got, ok := SplitVariantCacheKey(key); !ok || got != base {
+		t.Fatalf("SplitVariantCacheKey() = (%q, %v), want (%q, true)", got, ok, base)
+	}
+	if got := CacheKeyPath(key); got != "/path" {
+		t.Fatalf("CacheKeyPath() = %q", got)
+	}
+	if got := BaseCacheKey(key); got != base {
+		t.Fatalf("BaseCacheKey() = %q", got)
+	}
+}

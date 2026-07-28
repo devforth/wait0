@@ -6,6 +6,7 @@ import (
 
 	"wait0/internal/wait0/invalidation"
 	"wait0/internal/wait0/proxy"
+	"wait0/internal/wait0/revalidation"
 )
 
 type invalidationRuntimeAdapter struct {
@@ -25,15 +26,19 @@ func (a *invalidationRuntimeAdapter) CachedKeys() []string {
 		if _, ok := seen[k]; ok {
 			continue
 		}
-		seen[k] = struct{}{}
-		out = append(out, k)
+		if ent, ok := a.peekCacheEntry(k); ok && ent.VariantKind != variantKindManifest {
+			seen[k] = struct{}{}
+			out = append(out, k)
+		}
 	}
 	for _, k := range disk {
 		if _, ok := seen[k]; ok {
 			continue
 		}
-		seen[k] = struct{}{}
-		out = append(out, k)
+		if ent, ok := a.peekCacheEntry(k); ok && ent.VariantKind != variantKindManifest {
+			seen[k] = struct{}{}
+			out = append(out, k)
+		}
 	}
 	return out
 }
@@ -76,16 +81,31 @@ func (a *invalidationRuntimeAdapter) HasKey(key string) bool {
 }
 
 func (a *invalidationRuntimeAdapter) DeleteKey(key string) {
-	a.s.ram.Delete(key)
-	a.s.disk.Delete(key)
+	a.s.deleteCacheKey(key)
 }
 
-func (a *invalidationRuntimeAdapter) RecrawlKey(ctx context.Context, key string) string {
+func (a *invalidationRuntimeAdapter) TargetForKey(key string) invalidation.Target {
+	baseKey := proxy.BaseCacheKey(key)
+	path, query := proxy.SplitCacheKey(baseKey)
+	target := invalidation.Target{Key: key, Path: path, Query: query}
+	if ent, ok := a.peekCacheEntry(key); ok {
+		target.Headers = proxy.CloneHeader(ent.VariantRequestHeaders)
+		target.Host = target.Headers.Get("Host")
+	}
+	return target
+}
+
+func (a *invalidationRuntimeAdapter) RecrawlTarget(ctx context.Context, target invalidation.Target) string {
 	if a.s.reval == nil {
 		return "error"
 	}
-	path, query := proxy.SplitCacheKey(key)
-	return a.s.reval.Once(ctx, key, path, query, "invalidate").Kind
+	return a.s.reval.Once(ctx, revalidation.Target{
+		Key:     target.Key,
+		Path:    target.Path,
+		Query:   target.Query,
+		Headers: target.Headers,
+		Host:    target.Host,
+	}, "invalidate").Kind
 }
 
 func (a *invalidationRuntimeAdapter) peekCacheEntry(key string) (CacheEntry, bool) {

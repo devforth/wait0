@@ -25,15 +25,26 @@ func (a *revalidationRuntimeAdapter) Peek(key string) (revalidation.Entry, bool)
 	return revalidation.Entry{}, false
 }
 
-func (a *revalidationRuntimeAdapter) Put(key string, ent revalidation.Entry) {
+func (a *revalidationRuntimeAdapter) StoreResponse(target revalidation.Target, ent revalidation.Entry) (revalidation.Entry, error) {
 	v := fromRevalEntry(ent)
-	a.s.ram.Put(key, v, a.s.disk, a.s.overflowLog)
-	a.s.disk.PutAsync(key, v)
+	baseKey := proxy.BaseCacheKey(target.Key)
+	_, values, err := a.s.storeCacheableResponse(baseKey, target.Headers, target.Host, v)
+	if err != nil {
+		if a.s.errorLog != nil {
+			a.s.errorLog.Printf("Cache-Variant expression error: path=%q err=%q", target.Path, err.Error())
+		}
+		return revalidation.Entry{}, err
+	}
+	if len(values) > 0 {
+		v.VariantKind = variantKindResponse
+		v.VariantBaseKey = baseKey
+		v.VariantValues = append([]string(nil), values...)
+	}
+	return toRevalEntry(v), nil
 }
 
 func (a *revalidationRuntimeAdapter) Delete(key string) {
-	a.s.ram.Delete(key)
-	a.s.disk.Delete(key)
+	a.s.deleteCacheKey(key)
 }
 
 func (a *revalidationRuntimeAdapter) SnapshotAccessTimes() map[string]int64 {
@@ -82,6 +93,15 @@ func (a *revalidationRuntimeAdapter) CachableContentTypes(path string) []string 
 	return append([]string(nil), rule.CachableContentTypes...)
 }
 
+func (a *revalidationRuntimeAdapter) ResolveVariantTarget(baseKey string, headers http.Header, host string) (string, bool, error) {
+	manifest, ok := a.s.peekCacheEntry(baseKey)
+	if !ok || manifest.VariantKind != variantKindManifest {
+		return baseKey, false, nil
+	}
+	key, _, _, err := a.s.resolveVariant(manifest, headers, host)
+	return key, true, err
+}
+
 func (a *revalidationRuntimeAdapter) SendRevalidateMarkers() bool {
 	return a.s.sendRevalidateMarkers
 }
@@ -96,28 +116,42 @@ func (a *revalidationRuntimeAdapter) RandomString(n int) string {
 
 func toRevalEntry(ent CacheEntry) revalidation.Entry {
 	return revalidation.Entry{
-		Status:        ent.Status,
-		Header:        proxy.CloneHeader(ent.Header),
-		Body:          append([]byte(nil), ent.Body...),
-		StoredAt:      ent.StoredAt,
-		Hash32:        ent.Hash32,
-		Inactive:      ent.Inactive,
-		DiscoveredBy:  ent.DiscoveredBy,
-		RevalidatedAt: ent.RevalidatedAt,
-		RevalidatedBy: ent.RevalidatedBy,
+		Status:                ent.Status,
+		Header:                proxy.CloneHeader(ent.Header),
+		Body:                  append([]byte(nil), ent.Body...),
+		StoredAt:              ent.StoredAt,
+		Hash32:                ent.Hash32,
+		Inactive:              ent.Inactive,
+		DiscoveredBy:          ent.DiscoveredBy,
+		RevalidatedAt:         ent.RevalidatedAt,
+		RevalidatedBy:         ent.RevalidatedBy,
+		VariantKind:           ent.VariantKind,
+		VariantExpressions:    append([]string(nil), ent.VariantExpressions...),
+		VariantFingerprint:    ent.VariantFingerprint,
+		VariantHeaderNames:    append([]string(nil), ent.VariantHeaderNames...),
+		VariantBaseKey:        ent.VariantBaseKey,
+		VariantValues:         append([]string(nil), ent.VariantValues...),
+		VariantRequestHeaders: proxy.CloneHeader(ent.VariantRequestHeaders),
 	}
 }
 
 func fromRevalEntry(ent revalidation.Entry) CacheEntry {
 	return CacheEntry{
-		Status:        ent.Status,
-		Header:        proxy.CloneHeader(ent.Header),
-		Body:          append([]byte(nil), ent.Body...),
-		StoredAt:      ent.StoredAt,
-		Hash32:        ent.Hash32,
-		Inactive:      ent.Inactive,
-		DiscoveredBy:  ent.DiscoveredBy,
-		RevalidatedAt: ent.RevalidatedAt,
-		RevalidatedBy: ent.RevalidatedBy,
+		Status:                ent.Status,
+		Header:                proxy.CloneHeader(ent.Header),
+		Body:                  append([]byte(nil), ent.Body...),
+		StoredAt:              ent.StoredAt,
+		Hash32:                ent.Hash32,
+		Inactive:              ent.Inactive,
+		DiscoveredBy:          ent.DiscoveredBy,
+		RevalidatedAt:         ent.RevalidatedAt,
+		RevalidatedBy:         ent.RevalidatedBy,
+		VariantKind:           ent.VariantKind,
+		VariantExpressions:    append([]string(nil), ent.VariantExpressions...),
+		VariantFingerprint:    ent.VariantFingerprint,
+		VariantHeaderNames:    append([]string(nil), ent.VariantHeaderNames...),
+		VariantBaseKey:        ent.VariantBaseKey,
+		VariantValues:         append([]string(nil), ent.VariantValues...),
+		VariantRequestHeaders: proxy.CloneHeader(ent.VariantRequestHeaders),
 	}
 }

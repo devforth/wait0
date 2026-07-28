@@ -18,6 +18,15 @@ type Entry struct {
 
 	RevalidatedAt int64
 	RevalidatedBy string
+
+	VariantKind        string
+	VariantExpressions []string
+	VariantFingerprint string
+	VariantHeaderNames []string
+
+	VariantBaseKey        string
+	VariantValues         []string
+	VariantRequestHeaders http.Header
 }
 
 type Result struct {
@@ -32,12 +41,23 @@ type Result struct {
 	Err  string
 }
 
+type Target struct {
+	Key              string
+	Path             string
+	Query            string
+	Headers          http.Header
+	Host             string
+	PreserveExisting bool
+}
+
 type WarmRule struct {
-	ID               int
-	Match            string
-	PauseBetweenRuns time.Duration
-	WarmMax          int
-	Matches          func(path string) bool
+	ID                   int
+	Match                string
+	PauseBetweenRuns     time.Duration
+	WarmMax              int
+	Matches              func(path string) bool
+	PresetHeaderNames    []string
+	RequestHeaderPresets map[string][]string
 }
 
 type WarmupURLMetric struct {

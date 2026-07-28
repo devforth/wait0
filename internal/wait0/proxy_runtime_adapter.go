@@ -6,6 +6,7 @@ import (
 	"wait0/internal/wait0/dashboard"
 	"wait0/internal/wait0/invalidation"
 	"wait0/internal/wait0/proxy"
+	"wait0/internal/wait0/revalidation"
 	"wait0/internal/wait0/statapi"
 )
 
@@ -59,11 +60,12 @@ func (a *proxyRuntimeAdapter) PickRule(path string) *proxy.Rule {
 		return nil
 	}
 	return &proxy.Rule{
-		Bypass:               r.Bypass,
-		BypassWhenCookies:    append([]string(nil), r.BypassWhenCookies...),
-		CachableContentTypes: append([]string(nil), r.CachableContentTypes...),
-		VaryByQueryParams:    append([]string(nil), r.VaryByQueryParams...),
-		Expiration:           r.expDur,
+		Bypass:                   r.Bypass,
+		BypassWhenCookies:        append([]string(nil), r.BypassWhenCookies...),
+		BypassWhenRequestHeaders: append([]string(nil), r.BypassWhenRequestHeaders...),
+		CachableContentTypes:     append([]string(nil), r.CachableContentTypes...),
+		VaryByQueryParams:        append([]string(nil), r.VaryByQueryParams...),
+		Expiration:               r.expDur,
 	}
 }
 
@@ -87,26 +89,41 @@ func (a *proxyRuntimeAdapter) PromoteRAM(key string, ent proxy.Entry) {
 	a.s.ram.Put(key, fromProxyEntry(ent), a.s.disk, a.s.overflowLog)
 }
 
+func (a *proxyRuntimeAdapter) ResolveVariant(manifest proxy.Entry, r *http.Request) (string, []string, error) {
+	key, values, _, err := a.s.resolveVariant(fromProxyEntry(manifest), r.Header, r.Host)
+	return key, values, err
+}
+
 func (a *proxyRuntimeAdapter) DeleteKey(key string) {
-	a.s.ram.Delete(key)
-	a.s.disk.Delete(key)
+	a.s.deleteCacheKey(key)
 }
 
 func (a *proxyRuntimeAdapter) FetchFromOrigin(r *http.Request) (proxy.Entry, bool, string, error) {
 	return a.fetcher.FetchFromOrigin(r)
 }
 
-func (a *proxyRuntimeAdapter) Store(key string, ent proxy.Entry) {
+func (a *proxyRuntimeAdapter) Store(key string, r *http.Request, ent proxy.Entry) (proxy.Entry, error) {
 	v := fromProxyEntry(ent)
-	a.s.ram.Put(key, v, a.s.disk, a.s.overflowLog)
-	a.s.disk.PutAsync(key, v)
+	storedKey, values, err := a.s.storeCacheableResponse(key, r.Header, r.Host, v)
+	if err != nil {
+		if a.s.errorLog != nil {
+			a.s.errorLog.Printf("Cache-Variant expression error: path=%q err=%q", r.URL.Path, err.Error())
+		}
+		return proxy.Entry{}, err
+	}
+	if storedKey != key {
+		v.VariantKind = variantKindResponse
+		v.VariantBaseKey = key
+		v.VariantValues = append([]string(nil), values...)
+	}
+	return toProxyEntry(v), nil
 }
 
-func (a *proxyRuntimeAdapter) RevalidateAsync(key, path, query string) {
+func (a *proxyRuntimeAdapter) RevalidateAsync(key, path, query string, headers http.Header, host string) {
 	if a.s.reval == nil {
 		return
 	}
-	a.s.reval.Async(key, path, query, "user")
+	a.s.reval.Async(revalidation.Target{Key: key, Path: path, Query: query, Headers: headers, Host: host}, "user")
 }
 
 func (a *proxyRuntimeAdapter) DebugHeaders() proxy.DebugHeaderSet {
@@ -125,28 +142,42 @@ func (a *proxyRuntimeAdapter) WriteEntryWithStats(w http.ResponseWriter, ent pro
 
 func toProxyEntry(ent CacheEntry) proxy.Entry {
 	return proxy.Entry{
-		Status:        ent.Status,
-		Header:        proxy.CloneHeader(ent.Header),
-		Body:          append([]byte(nil), ent.Body...),
-		StoredAt:      ent.StoredAt,
-		Hash32:        ent.Hash32,
-		Inactive:      ent.Inactive,
-		DiscoveredBy:  ent.DiscoveredBy,
-		RevalidatedAt: ent.RevalidatedAt,
-		RevalidatedBy: ent.RevalidatedBy,
+		Status:                ent.Status,
+		Header:                proxy.CloneHeader(ent.Header),
+		Body:                  append([]byte(nil), ent.Body...),
+		StoredAt:              ent.StoredAt,
+		Hash32:                ent.Hash32,
+		Inactive:              ent.Inactive,
+		DiscoveredBy:          ent.DiscoveredBy,
+		RevalidatedAt:         ent.RevalidatedAt,
+		RevalidatedBy:         ent.RevalidatedBy,
+		VariantKind:           ent.VariantKind,
+		VariantExpressions:    append([]string(nil), ent.VariantExpressions...),
+		VariantFingerprint:    ent.VariantFingerprint,
+		VariantHeaderNames:    append([]string(nil), ent.VariantHeaderNames...),
+		VariantBaseKey:        ent.VariantBaseKey,
+		VariantValues:         append([]string(nil), ent.VariantValues...),
+		VariantRequestHeaders: proxy.CloneHeader(ent.VariantRequestHeaders),
 	}
 }
 
 func fromProxyEntry(ent proxy.Entry) CacheEntry {
 	return CacheEntry{
-		Status:        ent.Status,
-		Header:        proxy.CloneHeader(ent.Header),
-		Body:          append([]byte(nil), ent.Body...),
-		StoredAt:      ent.StoredAt,
-		Hash32:        ent.Hash32,
-		Inactive:      ent.Inactive,
-		DiscoveredBy:  ent.DiscoveredBy,
-		RevalidatedAt: ent.RevalidatedAt,
-		RevalidatedBy: ent.RevalidatedBy,
+		Status:                ent.Status,
+		Header:                proxy.CloneHeader(ent.Header),
+		Body:                  append([]byte(nil), ent.Body...),
+		StoredAt:              ent.StoredAt,
+		Hash32:                ent.Hash32,
+		Inactive:              ent.Inactive,
+		DiscoveredBy:          ent.DiscoveredBy,
+		RevalidatedAt:         ent.RevalidatedAt,
+		RevalidatedBy:         ent.RevalidatedBy,
+		VariantKind:           ent.VariantKind,
+		VariantExpressions:    append([]string(nil), ent.VariantExpressions...),
+		VariantFingerprint:    ent.VariantFingerprint,
+		VariantHeaderNames:    append([]string(nil), ent.VariantHeaderNames...),
+		VariantBaseKey:        ent.VariantBaseKey,
+		VariantValues:         append([]string(nil), ent.VariantValues...),
+		VariantRequestHeaders: proxy.CloneHeader(ent.VariantRequestHeaders),
 	}
 }

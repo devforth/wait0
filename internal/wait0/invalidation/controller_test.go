@@ -6,18 +6,23 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"wait0/internal/wait0/auth"
+	"wait0/internal/wait0/proxy"
 )
 
 type fakeRuntime struct {
+	mu          sync.Mutex
 	tagsByKey   map[string][]string
 	present     map[string]bool
 	recrawlKind map[string]string
 }
 
 func (f *fakeRuntime) CachedKeys() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := make([]string, 0, len(f.tagsByKey))
 	for k := range f.tagsByKey {
 		out = append(out, k)
@@ -26,20 +31,33 @@ func (f *fakeRuntime) CachedKeys() []string {
 }
 
 func (f *fakeRuntime) KeyTags(key string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return append([]string(nil), f.tagsByKey[key]...)
 }
 
 func (f *fakeRuntime) HasKey(key string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.present[key]
 }
 
 func (f *fakeRuntime) DeleteKey(key string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	delete(f.present, key)
 }
 
-func (f *fakeRuntime) RecrawlKey(_ context.Context, key string) string {
-	f.present[key] = true
-	if v, ok := f.recrawlKind[key]; ok {
+func (f *fakeRuntime) TargetForKey(key string) Target {
+	path, query := proxy.SplitCacheKey(key)
+	return Target{Key: key, Path: path, Query: query}
+}
+
+func (f *fakeRuntime) RecrawlTarget(_ context.Context, target Target) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.present[target.Key] = true
+	if v, ok := f.recrawlKind[target.Key]; ok {
 		return v
 	}
 	return "updated"

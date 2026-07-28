@@ -32,9 +32,13 @@ This is the default request path handled by the proxy controller.
 |----------|--------|-----------|------------------|
 | Matching rule has `bypass: true` | Skip cache; fetch upstream with bodyless `GET` | `bypass` | `bypass-rule` |
 | Matching rule cookie bypass is triggered | Skip cache; fetch upstream with bodyless `GET` | `ignore-by-cookie` | `bypass-cookie` |
+| A header listed by `bypassWhenRequestHeaders` is present | Skip cache; fetch upstream with bodyless `GET` | `ignore-by-request-header` | `bypass-request-header` |
 | Method is not `GET` | Skip cache; convert to bodyless upstream `GET` | `bypass` | `non-get-method` |
 | RAM or disk hit for active entry | Serve cached response instantly | `hit` | absent |
+| Variant manifest evaluates to a cached concrete subkey | Serve that variant instantly | `hit` | absent |
 | Miss and cacheable origin `2xx` | Store and serve response | `miss` | absent |
+| Cacheable origin `2xx` declares valid `Cache-Variant` expressions | Store a root manifest and the selected concrete response | `miss` | absent |
+| `Cache-Variant` cannot compile/evaluate or does not return strings | Serve without storing | `bypass` | `cache-variant-expression-error` |
 | Origin `2xx` has disallowed `Content-Type` | Serve without storing | `bypass` | `non-cacheable-content-type` |
 | Origin `2xx` has `no-cache` or `no-store` | Serve without storing | `bypass` | `non-cacheable-cache-control` |
 | Origin non-`2xx` | Do not cache, evict existing key | `ignore-by-status` | `non-cacheable-status` |
@@ -46,7 +50,8 @@ An origin response is cacheable only when:
 
 - status is `2xx`, and
 - the media type in `Content-Type` appears in the matching rule's `cachableContentType` list, and
-- `Cache-Control` does not include `no-store` or `no-cache`.
+- `Cache-Control` does not include `no-store` or `no-cache`, and
+- every declared `Cache-Variant` expression compiles, evaluates for the request, and returns a string.
 
 `cachableContentType` defaults to `text/html` and `application/xhtml+xml`. Matching is case-insensitive and ignores media-type parameters such as `charset=utf-8`. A missing or malformed `Content-Type` is not cacheable.
 
@@ -59,9 +64,10 @@ An origin response is cacheable only when:
 | `X-Wait0-Revalidated-At` | cache `hit` with revalidation metadata | Last revalidation timestamp (RFC3339Nano) |
 | `X-Wait0-Revalidated-By` | with `X-Wait0-Revalidated-At` | Revalidation source (`user`, `warmup`, `invalidate`, etc.) |
 | `X-Wait0-Discovered-By` | if entry was discovery seeded | Discovery source marker |
+| `X-Wait0-Cache-Variant-Key` | response selected/stored through `Cache-Variant` | Ordered expression results joined by `|` |
 | `Access-Control-Expose-Headers` | when wait0 headers exist | Exposes wait0 headers to browser clients |
 
-During background revalidation, wait0 can also send `X-Wait0-Revalidate-At` and `X-Wait0-Revalidate-Entropy` to the origin. `logging.debug_headers` controls all seven diagnostic headers. Omission enables all; an explicit `debug_headers: []` disables all. A configured subset enables only the named headers. `WAIT0_SEND_REVALIDATE_MARKERS=false` remains a master disable for the two origin markers.
+During background revalidation, wait0 can also send `X-Wait0-Revalidate-At` and `X-Wait0-Revalidate-Entropy` to the origin. `logging.debug_headers` controls all eight diagnostic headers. Omission enables all; an explicit `debug_headers: []` disables all. A configured subset enables only the named headers. `WAIT0_SEND_REVALIDATE_MARKERS=false` remains a master disable for the two origin markers.
 
 ## Example
 
@@ -156,11 +162,11 @@ The table below explains each field in the stats payload, including what it mean
 |------|------|---------|-------------|-------------------------|
 | `generated_at` | RFC3339Nano string | UTC timestamp when this snapshot was generated. | `time.Now().UTC()` at snapshot build time. | New value only when snapshot is recomputed. |
 | `snapshot_ttl_seconds` | integer | Snapshot cache TTL used by `/wait0`. | Fixed constant `5`. | Endpoint may return identical payload for calls within this TTL. |
-| `cache.urls_total` | integer | Total number of unique cached keys currently known to wait0. Includes active + inactive entries. | Unique union of RAM keys and disk keys. | Recomputed per snapshot. |
-| `cache.responses_size_bytes_total` | integer (bytes) | Total logical size of cached responses for all unique keys. | Sum over unique keys of per-entry logical size (`headers + body` bytes). | Recomputed per snapshot. |
-| `cache.response_size_bytes.min` | integer (bytes) | Smallest logical response size among unique cached keys. | Min of per-key logical response size. | Recomputed per snapshot; `0` when no keys. |
-| `cache.response_size_bytes.avg` | integer (bytes) | Average logical response size among unique cached keys. | `responses_size_bytes_total / urls_total` (integer division). | Recomputed per snapshot; `0` when no keys. |
-| `cache.response_size_bytes.max` | integer (bytes) | Largest logical response size among unique cached keys. | Max of per-key logical response size. | Recomputed per snapshot; `0` when no keys. |
+| `cache.urls_total` | integer | Total number of logical cached URLs currently known to wait0. Includes active + inactive entries. | Unique union of RAM and disk keys after concrete variant subkeys are folded into their base root. | Recomputed per snapshot. |
+| `cache.responses_size_bytes_total` | integer (bytes) | Total logical size of cached concrete responses. Variant manifests are excluded. | Sum over unique physical response entries of logical size (`headers + body` bytes). | Recomputed per snapshot. |
+| `cache.response_size_bytes.min` | integer (bytes) | Smallest logical response size among concrete response entries. | Min of per-response logical size; variant manifests are excluded. | Recomputed per snapshot; `0` when no responses. |
+| `cache.response_size_bytes.avg` | integer (bytes) | Average logical response size among concrete response entries. | `responses_size_bytes_total / concrete response count` (integer division). | Recomputed per snapshot; `0` when no responses. |
+| `cache.response_size_bytes.max` | integer (bytes) | Largest logical response size among concrete response entries. | Max of per-response logical size; variant manifests are excluded. | Recomputed per snapshot; `0` when no responses. |
 | `memory.rss_bytes` | integer (bytes) | Current process resident memory (RSS) as seen by OS probes. | `ProcessRSSBytes()`; `0` when unavailable on platform/runtime. | Recomputed per snapshot. |
 | `memory.go_alloc_bytes` | integer (bytes) | Current heap bytes allocated by Go runtime. | `runtime.ReadMemStats(&ms); ms.Alloc`. | Recomputed per snapshot. |
 | `refresh_duration_ms.min` | integer (ms) | Fastest observed revalidation execution time. | Min of observed `revalidation.Once(...)` durations, converted to milliseconds. | Process-lifetime aggregate since current process start. |
@@ -170,8 +176,8 @@ The table below explains each field in the stats payload, including what it mean
 | `sitemap.crawled_urls` | integer | Number of sitemap-discovered keys that are currently active (not inactive seed entries). | Count of sitemap keys where `inactive == false`. | Recomputed per snapshot. |
 | `sitemap.crawl_percentage` | float | Share of sitemap-discovered keys currently crawled/active. | `crawled_urls * 100 / discovered_urls`; `0` if `discovered_urls == 0`. | Recomputed per snapshot. |
 | `rules[]` | array | One entry for every configured rule, including rules with zero URLs or responses. | Configuration order after priority sorting. Cached keys are assigned to the first matching rule. | Recomputed per snapshot. |
-| `rules[].urls` | integer | Unique RAM/disk keys assigned to this rule, including inactive discovery seeds. | Union of matching RAM and disk keys. | `0` when empty. |
-| `rules[].responses` | integer | Active responses assigned to this rule. | Matching unique keys where `inactive == false`. | `0` when the rule has no responses. |
+| `rules[].urls` | integer | Unique logical root URLs assigned to this rule, including inactive discovery seeds. | Union of matching RAM and disk keys after variant subkeys are folded into their base root. | `0` when empty. |
+| `rules[].responses` | integer | Active concrete responses assigned to this rule. | Matching non-manifest keys where `inactive == false`; each concrete variant is one response. | `0` when the rule has no responses. |
 | `rules[].ram_size_bytes` | integer (bytes) | Encoded bytes occupied by this rule in RAM. | Sum of matching RAM entry storage sizes. | A key present in both tiers contributes to both tier sizes. |
 | `rules[].disk_size_bytes` | integer (bytes) | Encoded bytes occupied by this rule on disk. | Sum of matching LevelDB entry storage sizes. | A key present in both tiers contributes to both tier sizes. |
 | `rules[].warmup.configured` | boolean | Whether this rule has warmup configured. | `pauseBetweenRuns > 0` and `maxRequestsAtATime > 0`. | False rules are displayed as `- not set`. |
@@ -193,7 +199,7 @@ Per-rule rankings are maintained incrementally with a hard 10-entry bound: when 
 - Lifetime vs point-in-time:
   - `refresh_duration_ms.*` is lifetime cumulative for this process (does not reset per warmup batch).
   - `cache.*`, `memory.*`, `sitemap.*` are point-in-time values at snapshot generation.
-- Duplicate keys across RAM and disk are deduplicated as one logical cached URL in all `cache.*` and `sitemap.*` counts.
+- Duplicate keys across RAM and disk are deduplicated, and concrete variant subkeys are folded into one logical root URL for URL and sitemap counts. Response counts and sizes still include each concrete variant response.
 - Size units:
   - `*_bytes` fields are raw bytes.
   - `refresh_duration_ms` is milliseconds.
@@ -370,4 +376,5 @@ Input `"https://shop.example.com/catalog/item?id=42#frag"` becomes key `"/catalo
 ## See Also
 
 - [For Developers](for-developers.md) — configuration fields, commands, and runtime flags.
+- [Cache variant complexity](cache-variant-complexity.md) — root manifests, concrete subkeys, and operation costs.
 - [README](../README.md) — quick start and product overview.

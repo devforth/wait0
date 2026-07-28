@@ -13,12 +13,15 @@ import (
 )
 
 type diskMeta struct {
-	Size         int64
-	LastAccess   int64
-	StatsSize    int64
-	Inactive     bool
-	DiscoveredBy string
-	LastRefresh  int64
+	Size           int64
+	LastAccess     int64
+	StatsSize      int64
+	Inactive       bool
+	DiscoveredBy   string
+	LastRefresh    int64
+	VariantKind    string
+	VariantBaseKey string
+	VariantValues  []string
 }
 
 type diskOp struct {
@@ -99,6 +102,9 @@ func (d *Disk) MetaSnapshot() map[string]EntryMeta {
 			Inactive:            m.Inactive,
 			DiscoveredBy:        m.DiscoveredBy,
 			LastRefreshUnixNano: lastRefresh,
+			VariantKind:         m.VariantKind,
+			VariantBaseKey:      m.VariantBaseKey,
+			VariantValues:       append([]string(nil), m.VariantValues...),
 		}
 	}
 	return out
@@ -253,6 +259,14 @@ func (d *Disk) applyPutOrTouch(key string, ent *Entry) {
 		meta.Inactive = ent.Inactive
 		meta.DiscoveredBy = ent.DiscoveredBy
 		meta.LastRefresh = lastRefresh
+		meta.VariantKind = ""
+		meta.VariantBaseKey = ""
+		meta.VariantValues = nil
+		if ent.Variant != nil {
+			meta.VariantKind = ent.Variant.Kind
+			meta.VariantBaseKey = ent.Variant.BaseKey
+			meta.VariantValues = append([]string(nil), ent.Variant.Values...)
+		}
 		d.index[key] = meta
 		d.totalSize += size
 		total := d.totalSize

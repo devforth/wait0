@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -42,6 +43,103 @@ func TestHandle_CacheMissThenHit(t *testing.T) {
 
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("origin hits = %d, want 1", got)
+	}
+}
+
+func TestHandle_CacheVariantsSplitAndHit(t *testing.T) {
+	var hits atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		device := "desktop"
+		if strings.Contains(r.UserAgent(), "iPhone") || strings.Contains(r.UserAgent(), "Android Mobile") {
+			device = "mobile"
+		}
+		country := r.Header.Get("CF-IPCountry")
+		if country == "" {
+			country = "XX"
+		}
+		if country == "CA" && r.Header.Get("CF-Region-Code") == "ON" {
+			country = "CA-ON"
+		}
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Add("Cache-Variant", `"header('User-Agent') matches '(?i)(Android.*Mobile|iPhone|iPod|IEMobile|Windows Phone|Opera Mini)' ? 'mobile' : 'desktop'"`)
+		w.Header().Add("Cache-Variant", `"let c = header('CF-IPCountry', 'XX'); c == 'CA' && header('CF-Region-Code') == 'ON' ? 'CA-ON' : c"`)
+		fmt.Fprintf(w, "%s|%s", device, country)
+	}))
+	defer origin.Close()
+
+	s := newTestService(t, origin.URL, []Rule{mustRule(t, "PathPrefix(/)")})
+
+	type requestCase struct {
+		ua      string
+		country string
+		region  string
+		wait0   string
+		key     string
+	}
+	cases := []requestCase{
+		{ua: "Mozilla/5.0 (iPhone)", country: "CA", region: "ON", wait0: "miss", key: "mobile|CA-ON"},
+		{ua: "Mozilla/5.0 (X11; Linux)", country: "CA", region: "ON", wait0: "miss", key: "desktop|CA-ON"},
+		{ua: "Android Mobile", country: "US", wait0: "miss", key: "mobile|US"},
+		{ua: "Mozilla/5.0 (iPhone)", country: "CA", region: "ON", wait0: "hit", key: "mobile|CA-ON"},
+	}
+	for i, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, "http://wait0.local/a", nil)
+		req.Header.Set("User-Agent", tc.ua)
+		req.Header.Set("CF-IPCountry", tc.country)
+		if tc.region != "" {
+			req.Header.Set("CF-Region-Code", tc.region)
+		}
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+
+		if got := w.Result().Header.Get("X-Wait0"); got != tc.wait0 {
+			t.Fatalf("request %d X-Wait0 = %q, want %q", i+1, got, tc.wait0)
+		}
+		if got := w.Result().Header.Get("X-Wait0-Cache-Variant-Key"); got != tc.key {
+			t.Fatalf("request %d variant key = %q, want %q", i+1, got, tc.key)
+		}
+		if got := strings.TrimSpace(w.Body.String()); got != tc.key {
+			t.Fatalf("request %d body = %q, want %q", i+1, got, tc.key)
+		}
+		if got := len(w.Result().Header.Values("Cache-Variant")); got != 2 {
+			t.Fatalf("request %d Cache-Variant values = %d, want 2", i+1, got)
+		}
+	}
+	if got := hits.Load(); got != 3 {
+		t.Fatalf("origin hits = %d, want 3", got)
+	}
+	if got := len(s.variantChildren("/a")); got != 3 {
+		t.Fatalf("variant children = %d, want 3", got)
+	}
+}
+
+func TestHandle_CacheVariantExpressionErrorBypasses(t *testing.T) {
+	var hits atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Variant", `header('X-Required')`)
+		fmt.Fprint(w, "uncached")
+	}))
+	defer origin.Close()
+
+	s := newTestService(t, origin.URL, []Rule{mustRule(t, "PathPrefix(/)")})
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "http://wait0.local/a", nil))
+		if got := w.Result().Header.Get("X-Wait0"); got != "bypass" {
+			t.Fatalf("request %d X-Wait0 = %q", i+1, got)
+		}
+		if got := w.Result().Header.Get("X-Wait0-Reason"); got != "cache-variant-expression-error" {
+			t.Fatalf("request %d reason = %q", i+1, got)
+		}
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("origin hits = %d, want 2", hits.Load())
+	}
+	if _, ok := s.peekCacheEntry("/a"); ok {
+		t.Fatal("invalid expression response was cached")
 	}
 }
 
@@ -152,6 +250,43 @@ func TestHandle_BypassWhenCookiePresent(t *testing.T) {
 	}
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("origin hits = %d, want 1", got)
+	}
+}
+
+func TestHandle_BypassWhenRequestHeaderPresent(t *testing.T) {
+	var hits atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer secret" {
+			t.Errorf("origin Authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "ok")
+	}))
+	defer origin.Close()
+
+	rule := mustRule(t, "PathPrefix(/)")
+	rule.BypassWhenRequestHeaders = []string{"Authorization"}
+	s := newTestService(t, origin.URL, []Rule{rule})
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "http://wait0.local/page", nil)
+		req.Header.Set("Authorization", "Bearer secret")
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+
+		if got := w.Result().Header.Get("X-Wait0"); got != "ignore-by-request-header" {
+			t.Fatalf("request %d X-Wait0 = %q", i+1, got)
+		}
+		if got := w.Result().Header.Get("X-Wait0-Reason"); got != "bypass-request-header" {
+			t.Fatalf("request %d X-Wait0-Reason = %q", i+1, got)
+		}
+	}
+	if got := hits.Load(); got != 2 {
+		t.Fatalf("origin hits = %d, want 2 uncached requests", got)
+	}
+	if _, ok := s.peekCacheEntry("/page"); ok {
+		t.Fatal("header-bypassed response was cached")
 	}
 }
 

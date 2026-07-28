@@ -30,7 +30,9 @@ func TestRevalidationRuntimeAdapter_PeekPutDelete(t *testing.T) {
 		t.Fatalf("Peek RAM ok=%v ent=%+v", ok, ent)
 	}
 
-	a.Put("/disk", revalidation.Entry{Status: 201, Header: http.Header{"Y": {"2"}}, Body: []byte("d"), DiscoveredBy: "sitemap"})
+	if _, err := a.StoreResponse(revalidation.Target{Key: "/disk", Path: "/disk"}, revalidation.Entry{Status: 201, Header: http.Header{"Y": {"2"}}, Body: []byte("d"), DiscoveredBy: "sitemap"}); err != nil {
+		t.Fatalf("StoreResponse: %v", err)
+	}
 	if _, ok := s.ram.Peek("/disk"); !ok {
 		t.Fatalf("expected put to RAM")
 	}

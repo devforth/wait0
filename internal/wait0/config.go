@@ -3,6 +3,7 @@ package wait0
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -102,20 +103,23 @@ type WarmUpConfig struct {
 }
 
 type Rule struct {
-	Match                string        `yaml:"match"`
-	Priority             int           `yaml:"priority"`
-	Bypass               bool          `yaml:"bypass"`
-	BypassWhenCookies    []string      `yaml:"bypassWhenCookies"`
-	CachableContentTypes []string      `yaml:"cachableContentType"`
-	VaryByQueryParams    []string      `yaml:"varyByQueryParams"`
-	Expiration           string        `yaml:"expiration"`
-	WarmUp               *WarmUpConfig `yaml:"warmUp"`
+	Match                      string              `yaml:"match"`
+	Priority                   int                 `yaml:"priority"`
+	Bypass                     bool                `yaml:"bypass"`
+	BypassWhenCookies          []string            `yaml:"bypassWhenCookies"`
+	BypassWhenRequestHeaders   []string            `yaml:"bypassWhenRequestHeaders"`
+	CachableContentTypes       []string            `yaml:"cachableContentType"`
+	VaryByQueryParams          []string            `yaml:"varyByQueryParams"`
+	Expiration                 string              `yaml:"expiration"`
+	WarmUp                     *WarmUpConfig       `yaml:"warmUp"`
+	WarmupRequestHeaderPresets map[string][]string `yaml:"warmupRequestHeaderPresets"`
 
 	// compiled
-	matchers  []pathPrefixMatcher
-	expDur    time.Duration
-	warmPause time.Duration
-	warmMax   int
+	matchers              []pathPrefixMatcher
+	expDur                time.Duration
+	warmPause             time.Duration
+	warmMax               int
+	warmPresetHeaderNames []string
 }
 
 type pathPrefixMatcher struct{ Prefix string }
@@ -214,6 +218,23 @@ func LoadConfig(path string) (Config, error) {
 			return Config{}, fmt.Errorf("rules[%d].match: %w", i, err)
 		}
 		r.matchers = ms
+		if len(r.BypassWhenRequestHeaders) > 0 {
+			normalized := make([]string, 0, len(r.BypassWhenRequestHeaders))
+			seen := make(map[string]struct{}, len(r.BypassWhenRequestHeaders))
+			for headerIndex, rawName := range r.BypassWhenRequestHeaders {
+				name := http.CanonicalHeaderKey(strings.TrimSpace(rawName))
+				if !validHTTPHeaderName(name) {
+					return Config{}, fmt.Errorf("rules[%d].bypassWhenRequestHeaders[%d]: invalid header name %q", i, headerIndex, rawName)
+				}
+				key := strings.ToLower(name)
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				normalized = append(normalized, name)
+			}
+			r.BypassWhenRequestHeaders = normalized
+		}
 		contentTypes, err := proxy.NormalizeCachableContentTypes(r.CachableContentTypes)
 		if err != nil {
 			return Config{}, fmt.Errorf("rules[%d].cachableContentType: %w", i, err)
@@ -262,6 +283,51 @@ func LoadConfig(path string) (Config, error) {
 			r.warmPause = d
 			r.warmMax = r.WarmUp.MaxRequestsAtATime
 		}
+		if len(r.WarmupRequestHeaderPresets) > 0 {
+			if r.WarmUp == nil {
+				return Config{}, fmt.Errorf("rules[%d].warmupRequestHeaderPresets: requires warmUp", i)
+			}
+			normalized := make(map[string][]string, len(r.WarmupRequestHeaderPresets))
+			seenNames := make(map[string]struct{}, len(r.WarmupRequestHeaderPresets))
+			combinations := 1
+			for rawName, rawValues := range r.WarmupRequestHeaderPresets {
+				name := http.CanonicalHeaderKey(strings.TrimSpace(rawName))
+				if !validHTTPHeaderName(name) {
+					return Config{}, fmt.Errorf("rules[%d].warmupRequestHeaderPresets: invalid header name %q", i, rawName)
+				}
+				nameKey := strings.ToLower(name)
+				if _, ok := seenNames[nameKey]; ok {
+					return Config{}, fmt.Errorf("rules[%d].warmupRequestHeaderPresets: duplicate header name %q", i, rawName)
+				}
+				seenNames[nameKey] = struct{}{}
+				if len(rawValues) == 0 {
+					return Config{}, fmt.Errorf("rules[%d].warmupRequestHeaderPresets.%s: must contain at least one value", i, name)
+				}
+				values := make([]string, 0, len(rawValues))
+				seenValues := make(map[string]struct{}, len(rawValues))
+				for valueIndex, value := range rawValues {
+					if strings.ContainsAny(value, "\r\n") {
+						return Config{}, fmt.Errorf("rules[%d].warmupRequestHeaderPresets.%s[%d]: contains invalid control characters", i, name, valueIndex)
+					}
+					if _, ok := seenValues[value]; ok {
+						continue
+					}
+					seenValues[value] = struct{}{}
+					values = append(values, value)
+				}
+				normalized[name] = values
+				r.warmPresetHeaderNames = append(r.warmPresetHeaderNames, name)
+				maxInt := int(^uint(0) >> 1)
+				if combinations > maxInt/len(values) {
+					combinations = maxInt
+				} else {
+					combinations *= len(values)
+				}
+			}
+			sort.Strings(r.warmPresetHeaderNames)
+			r.WarmupRequestHeaderPresets = normalized
+			log.Printf("warmup header presets: rule=%d combinations_per_url=%d", i, combinations)
+		}
 	}
 
 	sort.Slice(cfg.Rules, func(i, j int) bool {
@@ -269,6 +335,25 @@ func LoadConfig(path string) (Config, error) {
 	})
 
 	return cfg, nil
+}
+
+func validHTTPHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9') {
+			continue
+		}
+		switch c {
+		case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func parseMatch(expr string) ([]pathPrefixMatcher, error) {

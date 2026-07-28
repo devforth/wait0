@@ -3,6 +3,8 @@ package stats
 import (
 	"runtime"
 	"time"
+
+	"wait0/internal/wait0/proxy"
 )
 
 type Logger interface {
@@ -11,22 +13,22 @@ type Logger interface {
 
 type CacheIndex interface {
 	RAMKeys() []string
-	DiskKeyCount() int
-	DiskHasKey(key string) bool
+	DiskKeys() []string
 	RAMTotalSize() uint64
 	DiskTotalSize() uint64
 }
 
 func CachedPathsCount(index CacheIndex) int {
 	ramKeys := index.RAMKeys()
-	diskCount := index.DiskKeyCount()
-	intersect := 0
-	for _, k := range ramKeys {
-		if index.DiskHasKey(k) {
-			intersect++
-		}
+	diskKeys := index.DiskKeys()
+	logical := make(map[string]struct{}, len(ramKeys)+len(diskKeys))
+	for _, key := range ramKeys {
+		logical[proxy.BaseCacheKey(key)] = struct{}{}
 	}
-	return len(ramKeys) + diskCount - intersect
+	for _, key := range diskKeys {
+		logical[proxy.BaseCacheKey(key)] = struct{}{}
+	}
+	return len(logical)
 }
 
 type LoopConfig struct {

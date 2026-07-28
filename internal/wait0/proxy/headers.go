@@ -15,6 +15,7 @@ const (
 	DebugHeaderDiscoveredBy      = "X-Wait0-Discovered-By"
 	DebugHeaderRevalidateAt      = "X-Wait0-Revalidate-At"
 	DebugHeaderRevalidateEntropy = "X-Wait0-Revalidate-Entropy"
+	DebugHeaderCacheVariantKey   = "X-Wait0-Cache-Variant-Key"
 )
 
 var supportedDebugHeaders = []string{
@@ -25,6 +26,7 @@ var supportedDebugHeaders = []string{
 	DebugHeaderDiscoveredBy,
 	DebugHeaderRevalidateAt,
 	DebugHeaderRevalidateEntropy,
+	DebugHeaderCacheVariantKey,
 }
 
 var managedDebugHeaders = map[string]struct{}{
@@ -35,6 +37,7 @@ var managedDebugHeaders = map[string]struct{}{
 	strings.ToLower(DebugHeaderDiscoveredBy):      {},
 	strings.ToLower(DebugHeaderRevalidateAt):      {},
 	strings.ToLower(DebugHeaderRevalidateEntropy): {},
+	strings.ToLower(DebugHeaderCacheVariantKey):   {},
 }
 
 // DebugHeaderSet is immutable after service construction. A nil set enables all
@@ -109,11 +112,21 @@ func WriteEntry(w http.ResponseWriter, ent Entry, wait0, reason string, configur
 	}
 	SetWait0Headers(w.Header(), wait0, reason, debugHeaders)
 	setWait0DiscoveredHeaders(w.Header(), ent, debugHeaders)
+	setWait0CacheVariantHeader(w.Header(), ent, debugHeaders)
 	if wait0 == "hit" {
 		setWait0RevalidatedHeaders(w.Header(), ent, debugHeaders)
 	}
 	w.WriteHeader(ent.Status)
 	_, _ = w.Write(ent.Body)
+}
+
+func setWait0CacheVariantHeader(h http.Header, ent Entry, debugHeaders DebugHeaderSet) {
+	h.Del(DebugHeaderCacheVariantKey)
+	if len(ent.VariantValues) == 0 || !debugHeaders.Enabled(DebugHeaderCacheVariantKey) {
+		return
+	}
+	h.Set(DebugHeaderCacheVariantKey, strings.Join(ent.VariantValues, "|"))
+	ensureExposedHeader(h, DebugHeaderCacheVariantKey)
 }
 
 func SetWait0Headers(h http.Header, wait0, reason string, configured ...DebugHeaderSet) {

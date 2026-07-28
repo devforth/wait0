@@ -8,17 +8,15 @@ import (
 
 type fakeCacheIndex struct {
 	ramKeys   []string
-	diskCount int
-	diskSet   map[string]bool
+	diskKeys  []string
 	ramTotal  uint64
 	diskTotal uint64
 }
 
-func (f fakeCacheIndex) RAMKeys() []string       { return append([]string(nil), f.ramKeys...) }
-func (f fakeCacheIndex) DiskKeyCount() int       { return f.diskCount }
-func (f fakeCacheIndex) DiskHasKey(key string) bool { return f.diskSet[key] }
-func (f fakeCacheIndex) RAMTotalSize() uint64    { return f.ramTotal }
-func (f fakeCacheIndex) DiskTotalSize() uint64   { return f.diskTotal }
+func (f fakeCacheIndex) RAMKeys() []string     { return append([]string(nil), f.ramKeys...) }
+func (f fakeCacheIndex) DiskKeys() []string    { return append([]string(nil), f.diskKeys...) }
+func (f fakeCacheIndex) RAMTotalSize() uint64  { return f.ramTotal }
+func (f fakeCacheIndex) DiskTotalSize() uint64 { return f.diskTotal }
 
 type captureLogger struct {
 	mu    sync.Mutex
@@ -39,12 +37,8 @@ func (l *captureLogger) count() int {
 
 func TestCachedPathsCount(t *testing.T) {
 	idx := fakeCacheIndex{
-		ramKeys:   []string{"/a", "/b", "/c"},
-		diskCount: 4,
-		diskSet: map[string]bool{
-			"/b": true,
-			"/x": true,
-		},
+		ramKeys:  []string{"/a", "/b", "/c"},
+		diskKeys: []string{"/b", "/d", "/e", "/f"},
 	}
 	if got := CachedPathsCount(idx); got != 6 {
 		t.Fatalf("CachedPathsCount = %d, want 6", got)
@@ -63,8 +57,7 @@ func TestLoop_LogsAndStops(t *testing.T) {
 		Collector: collector,
 		Cache: fakeCacheIndex{
 			ramKeys:   []string{"/a"},
-			diskCount: 1,
-			diskSet:   map[string]bool{"/a": true},
+			diskKeys:  []string{"/a"},
 			ramTotal:  1024,
 			diskTotal: 2048,
 		},

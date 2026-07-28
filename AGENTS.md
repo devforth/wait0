@@ -32,13 +32,15 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 │       ├── revalidation/          # Revalidate and warmup orchestration
 │       ├── discovery/             # Sitemap discovery and URL normalization
 │       ├── stats/                 # Metrics collector, periodic stats loop, proc probes
+│       ├── cachevariant/          # Cache-Variant Expr compilation and evaluation
 │       └── cache/                 # Cache internals (RAM + LevelDB + codec)
 ├── debug/
 │   ├── debug-compose.yml          # Local debug stack (origin + wait0)
 │   └── wait0.yaml                 # Debug configuration example
 ├── docs/
 │   ├── for-developers.md          # Build, config, and operations guide
-│   └── api-endpoints.md           # Endpoint and response reference
+│   ├── api-endpoints.md           # Endpoint and response reference
+│   └── cache-variant-complexity.md # Cache variant storage/operation complexity
 ├── scripts/
 │   ├── coverage.sh                # Coverage helper script
 │   ├── publish.sh                 # Publishing helper script
@@ -56,6 +58,7 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 | internal/wait0/service_core.go | Root composition: constructs module controllers and adapters |
 | internal/wait0/dashboard/controller.go | Dashboard HTTP controller (Basic Auth + bridge endpoints + HTML shell) |
 | internal/wait0/proxy/controller.go | Main request handling path and cache hit/miss/bypass flow |
+| internal/wait0/cachevariant/engine.go | Cache-Variant Expr parsing, compilation, header projection, and evaluation |
 | internal/wait0/revalidation/controller.go | Async revalidation and warmup orchestration |
 | internal/wait0/cache_ram.go / cache_disk.go | Root cache facades wrapping `internal/wait0/cache` |
 | internal/wait0/config.go | YAML configuration loading and rule parsing |
@@ -68,6 +71,7 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 | README | README.md | Project landing page and quick start |
 | For Developers | docs/for-developers.md | Build, config, and operations guide |
 | API Endpoints | docs/api-endpoints.md | Endpoint and response reference |
+| Cache Variant Complexity | docs/cache-variant-complexity.md | Root manifests, subkeys, and operation complexity |
 | Docker Hub notes | DOCKERHUB.md | Alias to README for Docker Hub presentation |
 
 ## Build & Development Commands

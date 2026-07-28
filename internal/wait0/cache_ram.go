@@ -59,7 +59,7 @@ func (c *ramCache) setLastAccessForTest(key string, ts int64) bool {
 }
 
 func toWait0Entry(ent cache.Entry) CacheEntry {
-	return CacheEntry{
+	out := CacheEntry{
 		Status:        ent.Status,
 		Header:        ent.Header,
 		Body:          ent.Body,
@@ -70,10 +70,20 @@ func toWait0Entry(ent cache.Entry) CacheEntry {
 		RevalidatedAt: ent.RevalidatedAt,
 		RevalidatedBy: ent.RevalidatedBy,
 	}
+	if ent.Variant != nil {
+		out.VariantKind = ent.Variant.Kind
+		out.VariantExpressions = append([]string(nil), ent.Variant.Expressions...)
+		out.VariantFingerprint = ent.Variant.Fingerprint
+		out.VariantHeaderNames = append([]string(nil), ent.Variant.HeaderNames...)
+		out.VariantBaseKey = ent.Variant.BaseKey
+		out.VariantValues = append([]string(nil), ent.Variant.Values...)
+		out.VariantRequestHeaders = cloneHTTPHeader(ent.Variant.RequestHeaders)
+	}
+	return out
 }
 
 func fromWait0Entry(ent CacheEntry) cache.Entry {
-	return cache.Entry{
+	out := cache.Entry{
 		Status:        ent.Status,
 		Header:        ent.Header,
 		Body:          ent.Body,
@@ -84,4 +94,27 @@ func fromWait0Entry(ent CacheEntry) cache.Entry {
 		RevalidatedAt: ent.RevalidatedAt,
 		RevalidatedBy: ent.RevalidatedBy,
 	}
+	if ent.VariantKind != "" {
+		out.Variant = &cache.VariantData{
+			Kind:           ent.VariantKind,
+			Expressions:    append([]string(nil), ent.VariantExpressions...),
+			Fingerprint:    ent.VariantFingerprint,
+			HeaderNames:    append([]string(nil), ent.VariantHeaderNames...),
+			BaseKey:        ent.VariantBaseKey,
+			Values:         append([]string(nil), ent.VariantValues...),
+			RequestHeaders: cloneHTTPHeader(ent.VariantRequestHeaders),
+		}
+	}
+	return out
+}
+
+func cloneHTTPHeader(h map[string][]string) map[string][]string {
+	if h == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(h))
+	for key, values := range h {
+		out[key] = append([]string(nil), values...)
+	}
+	return out
 }

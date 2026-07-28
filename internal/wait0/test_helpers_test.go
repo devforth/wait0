@@ -54,7 +54,9 @@ func newTestService(t *testing.T, origin string, rules []Rule) *Service {
 		errorLog:              wstats.NewRateLimitedLogger(time.Hour),
 		sendRevalidateMarkers: true,
 		stats:                 wstats.NewCollector(),
+		variants:              newVariantState(),
 	}
+	s.rebuildVariantFamilies()
 	s.reval = revalidation.NewController(
 		newRevalidationRuntimeAdapter(s),
 		s.bgSem,

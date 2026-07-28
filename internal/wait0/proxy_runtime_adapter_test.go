@@ -17,6 +17,7 @@ import (
 
 func TestProxyRuntimeAdapter_HandleControlAndRule(t *testing.T) {
 	s := newTestService(t, "http://example.com", []Rule{mustRule(t, "PathPrefix(/api)")})
+	s.cfg.Rules[0].BypassWhenRequestHeaders = []string{"Authorization"}
 	a := newProxyRuntimeAdapter(s)
 
 	w := httptest.NewRecorder()
@@ -58,10 +59,14 @@ func TestProxyRuntimeAdapter_HandleControlAndRule(t *testing.T) {
 		t.Fatalf("expected matching rule")
 	}
 	rule.BypassWhenCookies = append(rule.BypassWhenCookies, "session")
+	rule.BypassWhenRequestHeaders = append(rule.BypassWhenRequestHeaders, "X-Preview")
 	rule.CachableContentTypes = append(rule.CachableContentTypes, "application/json")
 	base := s.pickRule("/api/x")
 	if len(base.BypassWhenCookies) != 0 {
 		t.Fatalf("rule cookie list should be copied")
+	}
+	if len(base.BypassWhenRequestHeaders) != 1 {
+		t.Fatalf("rule request-header list should be copied")
 	}
 	if len(base.CachableContentTypes) != 0 {
 		t.Fatalf("rule content type list should be copied")
@@ -116,7 +121,10 @@ func TestProxyRuntimeAdapter_CacheAndStoreOps(t *testing.T) {
 		t.Fatalf("LoadRAM ok=%v ent=%+v", ok, ramEnt)
 	}
 
-	a.Store("/disk", proxy.Entry{Status: http.StatusAccepted, Header: http.Header{"X-S": {"1"}}, Body: []byte("body")})
+	req := httptest.NewRequest(http.MethodGet, "http://wait0.local/disk", nil)
+	if _, err := a.Store("/disk", req, proxy.Entry{Status: http.StatusAccepted, Header: http.Header{"X-S": {"1"}}, Body: []byte("body")}); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
 	if _, ok := s.ram.Peek("/disk"); !ok {
 		t.Fatalf("expected Store to populate RAM")
 	}
@@ -137,7 +145,7 @@ func TestProxyRuntimeAdapter_RevalidateAndWriteStats(t *testing.T) {
 	s := newTestService(t, "http://example.com", nil)
 	a := newProxyRuntimeAdapter(s)
 	s.reval = nil
-	a.RevalidateAsync("/x", "/x", "")
+	a.RevalidateAsync("/x", "/x", "", nil, "")
 
 	s.stats = wstats.NewCollector()
 	w := httptest.NewRecorder()

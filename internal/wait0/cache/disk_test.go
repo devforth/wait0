@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -49,6 +50,16 @@ func TestDisk_BasicOpsAndReopen(t *testing.T) {
 	if _, ok := d.Get("/inactive"); ok {
 		t.Fatalf("inactive entry should not be returned from Get")
 	}
+	d.PutAsync("/variant", Entry{Variant: &VariantData{
+		Kind:           "manifest",
+		Expressions:    []string{`header('Cookie')`},
+		Fingerprint:    "fingerprint",
+		HeaderNames:    []string{"Cookie"},
+		BaseKey:        "/variant",
+		Values:         []string{"pro"},
+		RequestHeaders: http.Header{"Cookie": {"plan=pro"}},
+	}})
+	waitForDisk(t, func() bool { return d.HasKey("/variant") })
 
 	d.Delete("/a")
 	waitForDisk(t, func() bool { return !d.HasKey("/a") })
@@ -64,10 +75,15 @@ func TestDisk_BasicOpsAndReopen(t *testing.T) {
 	if !d2.HasKey("/inactive") {
 		t.Fatalf("expected persisted key after reopen")
 	}
+	variant, ok := d2.Peek("/variant")
+	if !ok || variant.Variant == nil || variant.Variant.Kind != "manifest" ||
+		len(variant.Variant.Expressions) != 1 || variant.Variant.RequestHeaders.Get("Cookie") != "plan=pro" {
+		t.Fatalf("persisted variant = %+v, ok=%v", variant.Variant, ok)
+	}
 }
 
 func TestDisk_Eviction(t *testing.T) {
-	d, err := NewDisk(filepath.Join(t.TempDir(), "leveldb"), 256, true)
+	d, err := NewDisk(filepath.Join(t.TempDir(), "leveldb"), 1024, true)
 	if err != nil {
 		t.Fatalf("NewDisk: %v", err)
 	}

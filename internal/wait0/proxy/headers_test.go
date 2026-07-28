@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -132,5 +133,23 @@ func TestNormalizeDebugHeaders(t *testing.T) {
 
 	if _, err := NormalizeDebugHeaders([]string{"X-Wait0-Unknown"}); err == nil {
 		t.Fatal("expected unsupported debug header error")
+	}
+}
+
+func TestWriteEntry_CacheVariantDebugHeader(t *testing.T) {
+	ent := Entry{
+		Status:        http.StatusOK,
+		Header:        http.Header{DebugHeaderCacheVariantKey: {"origin-spoof"}},
+		Body:          []byte("ok"),
+		VariantValues: []string{"mobile", "CA-ON"},
+	}
+	w := httptest.NewRecorder()
+	WriteEntry(w, ent, "hit", "")
+
+	if got := w.Result().Header.Get(DebugHeaderCacheVariantKey); got != "mobile|CA-ON" {
+		t.Fatalf("%s = %q", DebugHeaderCacheVariantKey, got)
+	}
+	if got := w.Result().Header.Get("Access-Control-Expose-Headers"); !strings.Contains(got, DebugHeaderCacheVariantKey) {
+		t.Fatalf("Access-Control-Expose-Headers = %q", got)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"wait0/internal/wait0/invalidation"
 )
 
 func waitForInvalidation(t *testing.T, cond func() bool) {
@@ -55,7 +57,7 @@ func TestInvalidationRuntimeAdapter_KeyOpsAndTags(t *testing.T) {
 	}
 }
 
-func TestInvalidationRuntimeAdapter_RecrawlKey(t *testing.T) {
+func TestInvalidationRuntimeAdapter_RecrawlTarget(t *testing.T) {
 	var seenQuery string
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenQuery = r.URL.RawQuery
@@ -68,17 +70,17 @@ func TestInvalidationRuntimeAdapter_RecrawlKey(t *testing.T) {
 	s := newTestService(t, origin.URL, nil)
 	a := newInvalidationRuntimeAdapter(s)
 
-	kind := a.RecrawlKey(context.Background(), "/page?page=1")
+	kind := a.RecrawlTarget(context.Background(), invalidation.Target{Key: "/page?page=1", Path: "/page", Query: "page=1"})
 	if kind != "updated" {
-		t.Fatalf("RecrawlKey kind = %q, want updated", kind)
+		t.Fatalf("RecrawlTarget kind = %q, want updated", kind)
 	}
 	if seenQuery != "page=1" {
 		t.Fatalf("origin raw query = %q, want page=1", seenQuery)
 	}
 
 	s.reval = nil
-	kind = a.RecrawlKey(context.Background(), "/page")
+	kind = a.RecrawlTarget(context.Background(), invalidation.Target{Key: "/page", Path: "/page"})
 	if kind != "error" {
-		t.Fatalf("RecrawlKey nil reval kind = %q, want error", kind)
+		t.Fatalf("RecrawlTarget nil reval kind = %q, want error", kind)
 	}
 }
