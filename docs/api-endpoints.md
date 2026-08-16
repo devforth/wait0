@@ -128,6 +128,11 @@ Status: `200 OK`
     "crawled_urls": 60,
     "crawl_percentage": 75
   },
+  "url_persister": {
+    "records": 1240,
+    "restored": 1180,
+    "last_flush_unix": 1755252664
+  },
   "rules": [
     {
       "id": 0,
@@ -175,6 +180,10 @@ The table below explains each field in the stats payload, including what it mean
 | `sitemap.discovered_urls` | integer | Number of unique cached keys whose discovery source is sitemap. | Count of unique keys where `discovered_by == "sitemap"` (case-insensitive). | Recomputed per snapshot. |
 | `sitemap.crawled_urls` | integer | Number of sitemap-discovered keys that are currently active (not inactive seed entries). | Count of sitemap keys where `inactive == false`. | Recomputed per snapshot. |
 | `sitemap.crawl_percentage` | float | Share of sitemap-discovered keys currently crawled/active. | `crawled_urls * 100 / discovered_urls`; `0` if `discovered_urls == 0`. | Recomputed per snapshot. |
+| `url_persister` | object | Durable URL list state. Omitted entirely when `urlPersister.enabled` is false. | Read from the in-memory registry. | Absent key means the feature is off. |
+| `url_persister.records` | integer | URLs currently remembered, including variants as separate records. | Size of the registry, which is capped by `maxUrls`. | Recomputed per snapshot. |
+| `url_persister.restored` | integer | Records seeded from the file at the last start. | Excludes records skipped because no rule matched or the rule bypasses. | `0` when `restoreOnStart` is false or the file was missing. |
+| `url_persister.last_flush_unix` | integer (unix seconds) | When the file was last written. | Updated only on a successful write; a flush with nothing dirty does not write. | `0` before the first write. |
 | `rules[]` | array | One entry for every configured rule, including rules with zero URLs or responses. | Configuration order after priority sorting. Cached keys are assigned to the first matching rule. | Recomputed per snapshot. |
 | `rules[].urls` | integer | Unique logical root URLs assigned to this rule, including inactive discovery seeds. | Union of matching RAM and disk keys after variant subkeys are folded into their base root. | `0` when empty. |
 | `rules[].responses` | integer | Active concrete responses assigned to this rule. | Matching non-manifest keys where `inactive == false`; each concrete variant is one response. | `0` when the rule has no responses. |

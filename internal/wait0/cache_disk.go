@@ -62,6 +62,10 @@ func (d *diskCache) PutAsync(key string, ent CacheEntry) {
 	d.inner.PutAsync(key, fromWait0Entry(ent))
 }
 
+func (d *diskCache) PutAsyncWithAccess(key string, ent CacheEntry, accessUnix int64) {
+	d.inner.PutAsyncWithAccess(key, fromWait0Entry(ent), accessUnix)
+}
+
 func (d *diskCache) Delete(key string) {
 	d.inner.Delete(key)
 }

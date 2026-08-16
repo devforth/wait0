@@ -31,6 +31,7 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 │       ├── proxy/                 # Request handling/origin fetch/response headers
 │       ├── revalidation/          # Revalidate and warmup orchestration
 │       ├── discovery/             # Sitemap discovery and URL normalization
+│       ├── urlpersist/            # Durable list of cached URLs (YAML file + restore)
 │       ├── stats/                 # Metrics collector, periodic stats loop, proc probes
 │       ├── cachevariant/          # Cache-Variant Expr compilation and evaluation
 │       └── cache/                 # Cache internals (RAM + LevelDB + codec)
@@ -60,6 +61,7 @@ wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves 
 | internal/wait0/proxy/controller.go | Main request handling path and cache hit/miss/bypass flow |
 | internal/wait0/cachevariant/engine.go | Cache-Variant Expr parsing, compilation, header projection, and evaluation |
 | internal/wait0/revalidation/controller.go | Async revalidation and warmup orchestration |
+| internal/wait0/urlpersist/controller.go | Tracks successfully cached URLs, flushes them to YAML, and reseeds them on start |
 | internal/wait0/cache_ram.go / cache_disk.go | Root cache facades wrapping `internal/wait0/cache` |
 | internal/wait0/config.go | YAML configuration loading and rule parsing |
 | debug/debug-compose.yml | Spins up reproducible local debug environment |

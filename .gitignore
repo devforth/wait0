@@ -6,6 +6,10 @@
 # LevelDB
 **/data/leveldb/
 
+# URL persister
+**/data/urls.yaml
+**/data/urls.yaml.bak
+
 # Coverage artifacts
 coverage.out
 coverage.internal.filtered.out

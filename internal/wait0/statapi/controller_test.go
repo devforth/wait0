@@ -19,6 +19,8 @@ type fakeRuntime struct {
 	dur     MetricTriplet
 	rules   []RuleDefinition
 	warmups map[int]WarmupLoopSnapshot
+
+	urlPersister *URLPersisterSnapshot
 }
 
 func (f *fakeRuntime) RAMMetaSnapshot() map[string]EntryMeta {
@@ -43,6 +45,13 @@ func (f *fakeRuntime) RefreshDurationStatsMillis() MetricTriplet {
 
 func (f *fakeRuntime) RuleDefinitions() []RuleDefinition {
 	return append([]RuleDefinition(nil), f.rules...)
+}
+
+func (f *fakeRuntime) URLPersisterSnapshot() (URLPersisterSnapshot, bool) {
+	if f.urlPersister == nil {
+		return URLPersisterSnapshot{}, false
+	}
+	return *f.urlPersister, true
 }
 
 func (f *fakeRuntime) WarmupLoopSnapshots() map[int]WarmupLoopSnapshot {

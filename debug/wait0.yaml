@@ -35,6 +35,17 @@ urlsDiscover:
   sitemaps:
     - https://devforth.io/sitemap.xml
 
+# Remembers successfully cached URLs so the start-up LevelDB wipe does not
+# leave the cache cold. Uncomment to try it locally; the file is written
+# relative to the working directory and must stay outside ./data/leveldb.
+# urlPersister:
+#   enabled: true
+#   file: './data/urls.yaml'
+#   flushEvery: '30s'
+#   restoreOnStart: true
+#   maxUrls: 50000
+#   forgetAfterFailures: 3
+
 rules:
   - match: PathPrefix(/api) | PathPrefix(/admin) | PathPrefix(/lab)
     priority: 1

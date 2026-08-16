@@ -60,6 +60,15 @@ type Runtime interface {
 	RefreshDurationStatsMillis() MetricTriplet
 	RuleDefinitions() []RuleDefinition
 	WarmupLoopSnapshots() map[int]WarmupLoopSnapshot
+	URLPersisterSnapshot() (URLPersisterSnapshot, bool)
+}
+
+// URLPersisterSnapshot reports the durable URL list. Absent when the feature
+// is disabled, in which case the payload is omitted entirely.
+type URLPersisterSnapshot struct {
+	Records       int
+	Restored      int
+	LastFlushUnix int64
 }
 
 type Controller struct {
@@ -72,13 +81,20 @@ type Controller struct {
 }
 
 type response struct {
-	GeneratedAt        string         `json:"generated_at"`
-	SnapshotTTLSeconds int            `json:"snapshot_ttl_seconds"`
-	Cache              cachePayload   `json:"cache"`
-	Memory             memoryPayload  `json:"memory"`
-	RefreshDurationMS  MetricTriplet  `json:"refresh_duration_ms"`
-	Sitemap            sitemapPayload `json:"sitemap"`
-	Rules              []rulePayload  `json:"rules"`
+	GeneratedAt        string               `json:"generated_at"`
+	SnapshotTTLSeconds int                  `json:"snapshot_ttl_seconds"`
+	Cache              cachePayload         `json:"cache"`
+	Memory             memoryPayload        `json:"memory"`
+	RefreshDurationMS  MetricTriplet        `json:"refresh_duration_ms"`
+	Sitemap            sitemapPayload       `json:"sitemap"`
+	URLPersister       *urlPersisterPayload `json:"url_persister,omitempty"`
+	Rules              []rulePayload        `json:"rules"`
+}
+
+type urlPersisterPayload struct {
+	Records       int   `json:"records"`
+	Restored      int   `json:"restored"`
+	LastFlushUnix int64 `json:"last_flush_unix"`
 }
 
 type cachePayload struct {
@@ -306,7 +322,20 @@ func (c *Controller) buildSnapshot(now time.Time) response {
 			CrawledURLs:     sitemapCrawled,
 			CrawlPercentage: crawlPct,
 		},
-		Rules: rules,
+		URLPersister: urlPersisterPayloadOf(c.rt),
+		Rules:        rules,
+	}
+}
+
+func urlPersisterPayloadOf(rt Runtime) *urlPersisterPayload {
+	snap, ok := rt.URLPersisterSnapshot()
+	if !ok {
+		return nil
+	}
+	return &urlPersisterPayload{
+		Records:       snap.Records,
+		Restored:      snap.Restored,
+		LastFlushUnix: snap.LastFlushUnix,
 	}
 }
 

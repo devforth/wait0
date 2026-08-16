@@ -507,9 +507,12 @@ func (c *Controller) WarmupTargets(rule WarmRule) []Target {
 		if ent.VariantKind == "manifest" {
 			continue
 		}
-		if ent.Inactive && len(rule.PresetHeaderNames) > 0 {
+		if ent.Inactive && len(ent.VariantRequestHeaders) == 0 && len(rule.PresetHeaderNames) > 0 {
 			// Presets are the initial population strategy for sitemap seeds;
 			// avoid an extra headerless request in addition to the Cartesian set.
+			// A seed that already carries request headers describes a variant
+			// that was really observed, so it is fetched from those headers
+			// rather than left to the guessed preset combinations.
 			continue
 		}
 		basePath, query := proxy.SplitCacheKey(base)

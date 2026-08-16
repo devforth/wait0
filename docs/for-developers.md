@@ -155,6 +155,19 @@ For dashboard:
 | `initalDelay` | duration | Legacy typo still supported |
 | `rediscoverEvery` | duration | Periodic rediscovery interval (`> 0`) |
 
+## `urlPersister`
+
+| Field | Type | Default | Notes |
+|-------|------|---------|------|
+| `enabled` | bool | `false` | Remembers successfully cached URLs in a YAML file; everything below applies only when `true` |
+| `file` | path | `./data/urls.yaml` | Destination file; a `.bak` copy of the previous generation is kept beside it |
+| `flushEvery` | duration | `30s` | File write interval (`> 0`); tracking is immediate and an unchanged list is not rewritten |
+| `restoreOnStart` | bool | `true` | Reads the file on start and registers each URL as an inactive cache entry |
+| `maxUrls` | int | `50000` | Cap on remembered URLs (`> 0`); the least recently used are dropped |
+| `forgetAfterFailures` | int | `3` | Failures a URL survives before it is forgotten (`>= 0`); `0` forgets it on the first failure, and a successful store resets the counter. Warmup contributes at most one failure per start because a deleted entry is never retried; client requests contribute one each |
+
+Validation rules: `file` must not resolve inside `./data/leveldb`, `flushEvery` must be `> 0`, `maxUrls` must be `> 0`, `forgetAfterFailures` must be `>= 0`.
+
 ## `logging`
 
 | Field | Type | Notes |
@@ -179,7 +192,13 @@ For dashboard:
 - Origin `2xx` responses with `Cache-Control: no-cache` or `no-store` are not stored; either directive received during revalidation deletes the existing entry.
 - Warmup loops never overlap: wait0 completes the current rule snapshot, waits `pauseBetweenRuns`, then loads a fresh snapshot.
 - Variant warmup replays the original URL with the referenced request headers saved on each discovered concrete response. `warmupRequestHeaderPresets` adds its full Cartesian product and can substantially increase cache entries and origin traffic.
-- `Cache-Variant` expressions may reference every request header, including cookies and authorization. Referenced values are persisted for later refresh, so protecting sensitive values is the operator's responsibility.
+- `Cache-Variant` expressions may reference every request header, including cookies and authorization. Referenced values are persisted for later refresh, so protecting sensitive values is the operator's responsibility. With `urlPersister` enabled those values also leave the process and land in the persisted YAML file in plain text.
+- `urlPersister.file` must live outside `./data/leveldb`: that directory is deleted on every start when `WAIT0_INVALIDATE_DISK_CACHE_ON_START` is `true`, and surviving exactly that wipe is the point of the feature. A path inside it is rejected by config validation, so wait0 refuses to start.
+- Mount the directory containing `urlPersister.file` as a volume. The image declares `/data`, and the default `./data/urls.yaml` resolves inside it.
+- A missing, truncated, or otherwise corrupt persisted file never blocks startup: wait0 logs the problem, retries the `.bak` copy, and then continues with an empty list.
+- Restoring writes inactive placeholder entries only; it fetches nothing. Restored URLs are refetched by the normal warmup loop, so they need a matching rule with a `warmUp` block, and paths matching a `bypass: true` rule are skipped.
+- One record is stored per cache key, so a variant family contributes one record per distinct tuple of evaluated variant values rather than one per request. Records carrying a superseded `Cache-Variant` fingerprint are pruned when a new generation is stored.
+- `GET /wait0` includes a `url_persister` object (`records`, `restored`, `last_flush_unix`) while the feature is enabled and omits it otherwise.
 - `logging.debug_headers` may select any of `X-Wait0`, `X-Wait0-Reason`, `X-Wait0-Revalidated-At`, `X-Wait0-Revalidated-By`, `X-Wait0-Discovered-By`, `X-Wait0-Revalidate-At`, `X-Wait0-Revalidate-Entropy`, and `X-Wait0-Cache-Variant-Key`.
 - Omit `logging.debug_headers` to enable all diagnostics; set `debug_headers: []` to disable all of them.
 - `X-Wait0` response header identifies behavior (`hit`, `miss`, `bypass`, `ignore-by-cookie`, `ignore-by-request-header`, `ignore-by-status`, `bad-gateway`).

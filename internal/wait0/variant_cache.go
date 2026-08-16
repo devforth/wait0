@@ -175,6 +175,7 @@ func (s *Service) storeCacheableResponse(baseKey string, headers http.Header, ho
 		for _, child := range s.replaceVariantChildren(baseKey, "") {
 			s.deleteRawCacheEntry(child)
 		}
+		s.notePersistedStore(baseKey, baseKey, ent)
 		return baseKey, nil, nil
 	}
 
@@ -211,6 +212,7 @@ func (s *Service) storeCacheableResponse(baseKey string, headers http.Header, ho
 	}
 
 	s.putRawCacheEntry(childKey, child)
+	s.notePersistedStore(childKey, baseKey, child)
 	if hasCurrent && current.VariantKind == variantKindManifest && current.VariantFingerprint == set.Fingerprint {
 		s.addVariantChild(baseKey, childKey)
 		return childKey, result.Values, nil
@@ -224,6 +226,7 @@ func (s *Service) storeCacheableResponse(baseKey string, headers http.Header, ho
 }
 
 func (s *Service) deleteCacheKey(key string) {
+	s.notePersistedDelete(key)
 	baseKey, isChild := proxy.SplitVariantCacheKey(key)
 	if !isChild {
 		if ent, ok := s.peekCacheEntry(key); ok && ent.VariantKind == variantKindManifest {

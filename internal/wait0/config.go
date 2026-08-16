@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -46,6 +47,8 @@ type Config struct {
 		rediscoverEveryDur time.Duration `yaml:"-"`
 	} `yaml:"urlsDiscover"`
 
+	URLPersister URLPersisterConfig `yaml:"urlPersister"`
+
 	Logging struct {
 		LogStatsEvery    string        `yaml:"log_stats_every"`
 		logStatsEveryDur time.Duration `yaml:"-"`
@@ -63,6 +66,30 @@ type Config struct {
 
 	Rules []Rule `yaml:"rules"`
 }
+
+// URLPersisterConfig controls the durable list of successfully cached URLs.
+// The file is written outside the LevelDB directory on purpose: that directory
+// is deleted on every start by default, and remembering URLs across exactly
+// that wipe is the point of this feature.
+type URLPersisterConfig struct {
+	Enabled             bool   `yaml:"enabled"`
+	File                string `yaml:"file"`
+	FlushEvery          string `yaml:"flushEvery"`
+	RestoreOnStart      *bool  `yaml:"restoreOnStart"`
+	MaxURLs             int    `yaml:"maxUrls"`
+	ForgetAfterFailures *int   `yaml:"forgetAfterFailures"`
+
+	// compiled
+	flushEveryDur time.Duration `yaml:"-"`
+}
+
+const (
+	defaultURLPersisterFile                = "./data/urls.yaml"
+	defaultURLPersisterFlushEvery          = "30s"
+	defaultURLPersisterMaxURLs             = 50000
+	defaultURLPersisterForgetAfterFailures = 3
+	diskCacheDir                           = "./data/leveldb"
+)
 
 type InvalidationConfig struct {
 	Enabled bool `yaml:"enabled"`
@@ -183,6 +210,10 @@ func LoadConfig(path string) (Config, error) {
 			}
 			cfg.URLsDiscover.rediscoverEveryDur = d
 		}
+	}
+
+	if err := cfg.URLPersister.applyDefaultsAndValidate(); err != nil {
+		return Config{}, fmt.Errorf("urlPersister.%w", err)
 	}
 
 	if cfg.Logging.LogStatsEvery != "" {
@@ -392,6 +423,72 @@ func (r *Rule) Matches(path string) bool {
 		}
 	}
 	return false
+}
+
+func (c *URLPersisterConfig) applyDefaultsAndValidate() error {
+	if !c.Enabled {
+		return nil
+	}
+
+	c.File = strings.TrimSpace(c.File)
+	if c.File == "" {
+		c.File = defaultURLPersisterFile
+	}
+	if withinDir(c.File, diskCacheDir) {
+		return fmt.Errorf("file: must not be inside the disk cache directory %q, which is deleted on start", diskCacheDir)
+	}
+
+	flushEvery := strings.TrimSpace(c.FlushEvery)
+	if flushEvery == "" {
+		flushEvery = defaultURLPersisterFlushEvery
+	}
+	d, err := time.ParseDuration(flushEvery)
+	if err != nil {
+		return fmt.Errorf("flushEvery: %w", err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("flushEvery: must be > 0")
+	}
+	c.FlushEvery = flushEvery
+	c.flushEveryDur = d
+
+	if c.RestoreOnStart == nil {
+		restore := true
+		c.RestoreOnStart = &restore
+	}
+	if c.MaxURLs == 0 {
+		c.MaxURLs = defaultURLPersisterMaxURLs
+	}
+	if c.MaxURLs < 0 {
+		return fmt.Errorf("maxUrls: must be > 0")
+	}
+	if c.ForgetAfterFailures == nil {
+		forget := defaultURLPersisterForgetAfterFailures
+		c.ForgetAfterFailures = &forget
+	}
+	if *c.ForgetAfterFailures < 0 {
+		return fmt.Errorf("forgetAfterFailures: must be >= 0")
+	}
+	return nil
+}
+
+// withinDir reports whether path resolves inside dir. Both are made absolute
+// against the working directory first, so an absolute path naming the same
+// place as the relative disk-cache constant is still caught, and both are
+// cleaned so "./data/leveldb/../urls.yaml" is correctly seen as outside.
+func withinDir(path, dir string) bool {
+	cleanPath, err := filepath.Abs(path)
+	if err != nil {
+		cleanPath = filepath.Clean(path)
+	}
+	cleanDir, err := filepath.Abs(dir)
+	if err != nil {
+		cleanDir = filepath.Clean(dir)
+	}
+	if cleanPath == cleanDir {
+		return true
+	}
+	return strings.HasPrefix(cleanPath, cleanDir+string(filepath.Separator))
 }
 
 func (c *InvalidationConfig) applyDefaults() {

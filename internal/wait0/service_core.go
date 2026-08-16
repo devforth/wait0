@@ -17,6 +17,7 @@ import (
 	"wait0/internal/wait0/revalidation"
 	"wait0/internal/wait0/statapi"
 	wstats "wait0/internal/wait0/stats"
+	"wait0/internal/wait0/urlpersist"
 )
 
 type Service struct {
@@ -49,6 +50,7 @@ type Service struct {
 	proxy   *proxy.Controller
 	reval   *revalidation.Controller
 	disco   *discovery.Controller
+	urlp    *urlpersist.Controller
 }
 
 func envBool(name string, def bool) bool {
@@ -103,7 +105,7 @@ func NewService(cfg Config) (*Service, error) {
 	// Disk cache is explicitly invalidated on every restart.
 	// This is done efficiently by deleting the LevelDB directory before opening.
 	invalidateDiskOnStart := envBool("WAIT0_INVALIDATE_DISK_CACHE_ON_START", true)
-	disk, err := newDiskCache("./data/leveldb", diskMax, invalidateDiskOnStart)
+	disk, err := newDiskCache(diskCacheDir, diskMax, invalidateDiskOnStart)
 	if err != nil {
 		return nil, err
 	}
@@ -163,6 +165,29 @@ func NewService(cfg Config) (*Service, error) {
 	)
 	s.reval.SetDurationObserver(s.stats.ObserveRefreshDuration)
 	s.proxy = proxy.NewController(newProxyRuntimeAdapter(s))
+	if cfg.URLPersister.Enabled {
+		s.urlp = urlpersist.NewController(
+			urlpersist.Config{
+				Enabled:             true,
+				File:                cfg.URLPersister.File,
+				Origin:              cfg.Server.Origin,
+				FlushEvery:          cfg.URLPersister.flushEveryDur,
+				RestoreOnStart:      cfg.URLPersister.RestoreOnStart == nil || *cfg.URLPersister.RestoreOnStart,
+				MaxURLs:             cfg.URLPersister.MaxURLs,
+				ForgetAfterFailures: *cfg.URLPersister.ForgetAfterFailures,
+			},
+			newURLPersistRuntimeAdapter(s),
+			s.stopCh,
+			&s.wg,
+			log.Default(),
+		)
+		log.Printf(
+			"urlPersister enabled: file=%q flushEvery=%s maxUrls=%d restoreOnStart=%t forgetAfterFailures=%d",
+			cfg.URLPersister.File, cfg.URLPersister.flushEveryDur, cfg.URLPersister.MaxURLs,
+			cfg.URLPersister.RestoreOnStart == nil || *cfg.URLPersister.RestoreOnStart,
+			*cfg.URLPersister.ForgetAfterFailures,
+		)
+	}
 	s.disco = discovery.NewController(
 		discovery.Config{
 			Origin:          cfg.Server.Origin,
@@ -198,6 +223,7 @@ func NewService(cfg Config) (*Service, error) {
 	if s.disco != nil {
 		s.disco.Start()
 	}
+	s.urlp.Start()
 
 	return s, nil
 }

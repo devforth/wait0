@@ -28,6 +28,11 @@ type diskOp struct {
 	putKey string
 	putEnt *Entry
 	delKey string
+	// accessUnix overrides the last-access stamp for this put. Zero keeps the
+	// default of "now", which is what every live write wants; restoring a
+	// remembered URL passes the time it was actually last used so warmup order
+	// survives a restart.
+	accessUnix int64
 }
 
 type Disk struct {
@@ -178,6 +183,13 @@ func (d *Disk) PutAsync(key string, ent Entry) {
 	d.ops <- diskOp{putKey: key, putEnt: &clone}
 }
 
+// PutAsyncWithAccess stores ent with an explicit last-access time instead of
+// the write time.
+func (d *Disk) PutAsyncWithAccess(key string, ent Entry, accessUnix int64) {
+	clone := ent
+	d.ops <- diskOp{putKey: key, putEnt: &clone, accessUnix: accessUnix}
+}
+
 func (d *Disk) Delete(key string) {
 	d.ops <- diskOp{delKey: key}
 }
@@ -222,13 +234,16 @@ func (d *Disk) writerLoop() {
 			continue
 		}
 		if op.putKey != "" {
-			d.applyPutOrTouch(op.putKey, op.putEnt)
+			d.applyPutOrTouch(op.putKey, op.putEnt, op.accessUnix)
 		}
 	}
 }
 
-func (d *Disk) applyPutOrTouch(key string, ent *Entry) {
+func (d *Disk) applyPutOrTouch(key string, ent *Entry, accessUnix int64) {
 	now := time.Now().Unix()
+	if accessUnix > 0 {
+		now = accessUnix
+	}
 
 	d.mu.Lock()
 	meta := d.index[key]

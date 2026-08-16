@@ -53,8 +53,11 @@ rules:
 ```bash
 docker run --rm -p 8082:8082 \
   -v "$(pwd)/wait0.yaml:/wait0.yaml:ro" \
+  -v wait0-data:/data \
   devforth/wait0:latest
 ```
+
+The image declares `/data` as a volume and wait0 writes everything durable there, including the LevelDB cache and the [URL persister](#url-persister) file. Mount a named volume as shown; with `--rm` and no named volume that data goes to an anonymous volume and is lost on every stop.
 
 3. Alternative: build a tiny wrapper image with your config baked in.
 
@@ -133,7 +136,7 @@ Notes:
 
 | Guide | Description |
 |-------|-------------|
-| [Usage and configuration](#usage-and-configuration) | [How wait0 works](#how-wait0-works), [cache bypass](#cache-bypass), [cache variants](#cache-variants), [query parameters](#query-parameter-caching), [sitemap warmup](#sitemap-warmup), and the [config reference](#config-file-reference) |
+| [Usage and configuration](#usage-and-configuration) | [How wait0 works](#how-wait0-works), [cache bypass](#cache-bypass), [cache variants](#cache-variants), [query parameters](#query-parameter-caching), [sitemap warmup](#sitemap-warmup), [URL persister](#url-persister), and the [config reference](#config-file-reference) |
 | [For Developers](docs/for-developers.md) | Build/test commands, config reference, runtime options |
 | [API Endpoints](docs/api-endpoints.md) | Proxy behavior, invalidation API, schemas, status codes |
 | [Cache variant complexity](docs/cache-variant-complexity.md) | Root/subkey storage model and operation complexity |
@@ -246,6 +249,38 @@ Each warmup rule starts its first loop immediately and processes one complete UR
 
 Dashboard statistics retain only the latest completed warmup loop per rule. Fastest, slowest, largest, and smallest URL rankings are capped at 10 entries while they are collected, so wait0 does not accumulate warmup history or discarded ranking candidates.
 
+### URL persister
+
+`urlPersister` remembers every URL that was successfully stored in the cache and writes that list to a YAML file. On the next start the file is read back and each remembered URL is registered as an inactive cache entry, so the existing warmup machinery refetches it. This is what carries a working set across the start-up disk cache wipe described in [Redeploy Note](#redeploy-note), which otherwise leaves every restart cold.
+
+```yaml
+urlPersister:
+  enabled: true
+  file: './data/urls.yaml'
+  flushEvery: '30s'
+  restoreOnStart: true
+  maxUrls: 50000
+  forgetAfterFailures: 3
+```
+
+Mount the directory that holds `file` as a volume, otherwise the list disappears with the container and the feature does nothing. The default path `./data/urls.yaml` resolves inside `/data`, which the official image already declares as a volume. The file must not be placed inside `./data/leveldb`; that directory is wiped on start, and such a path is rejected when the config is loaded.
+
+The URL persister works with a sitemap or without one, and can replace one: its list is built from URLs traffic actually requested and wait0 actually cached, so it also covers pages no sitemap advertises. Sitemap-discovered URLs join the same list once they have been cached.
+
+Notes:
+
+- Tracking is immediate. `flushEvery` only controls how often the in-memory list is written to the file, and a write is skipped entirely when nothing changed.
+- Restoring a URL only registers it; nothing is fetched by the restore itself. A restored URL is refetched only when a matching rule has a `warmUp` block. Paths with no matching rule, or a rule with `bypass: true`, are skipped.
+- Cache variants are remembered by the request-header values their `Cache-Variant` expressions reference, which is what makes a variant replayable after restart. There is one record per distinct tuple of evaluated variant values, not one per request: a thousand `User-Agent` strings that all evaluate to `mobile` collapse into a single record.
+- Query-aware entries created by `varyByQueryParams` are remembered with their query and stay separate records.
+- `maxUrls` caps the file. When it is exceeded, the least recently used URLs are dropped.
+- When a remembered URL stops being cacheable its cache entry is deleted and the record counts one failure; the record is forgotten once it reaches `forgetAfterFailures`, or on the first failure when the value is `0`. A successful store resets the counter. Warmup cannot retry a URL after its entry is deleted, so a URL that only warmup touches costs one failed request per start; a URL that clients still request counts a failure per request. Either way a dead URL is never hammered, and a brief origin outage does not erase the file.
+- The file contains URL identities only: paths, query strings, variant values, and the referenced request headers. No response bodies and no response headers are written.
+- A missing or corrupt file never blocks startup. wait0 falls back to the `.bak` copy written beside it, then to an empty list.
+- While enabled, the stats API adds a `url_persister` object reporting `records`, `restored`, and `last_flush_unix`. It is omitted when the feature is off.
+
+> **Warning:** when `urlPersister` is enabled, do not reference per-user request headers such as `Cookie` or `Authorization` in `Cache-Variant` expressions. Their values are written into this file in plain text so the variant can be replayed later, and an expression that returns such a value verbatim also echoes it in the `X-Wait0-Cache-Variant-Key` response header. Use expressions that collapse requests into a small shared set of values such as `mobile`/`desktop` or a country code.
+
 ### Config file reference
 
 This example contains every current configuration option. Durations use Go syntax such as `10s`, `1m`, or `2h`; sizes accept bytes or `k`, `m`, and `g` suffixes.
@@ -300,6 +335,23 @@ urlsDiscover:
   # Sitemap or sitemap-index URLs; origin-relative paths are also accepted.
   sitemaps:
     - 'https://example.com/sitemap.xml'
+
+urlPersister:
+  # Remembers successfully cached URLs across restarts; default false.
+  enabled: true
+  # File the list is written to; must be outside ./data/leveldb, which is
+  # wiped on start. Default './data/urls.yaml'.
+  file: './data/urls.yaml'
+  # How often the list is written to the file; default 30s. Tracking itself is
+  # immediate, and an unchanged list is not rewritten.
+  flushEvery: '30s'
+  # Reads the file on start and registers each URL for warmup; default true.
+  restoreOnStart: true
+  # Maximum remembered URLs; least recently used are dropped. Default 50000.
+  maxUrls: 50000
+  # Failing starts a URL survives before it is forgotten; 0 forgets it on the
+  # first failure. Default 3.
+  forgetAfterFailures: 3
 
 rules:
   # Matches path prefixes; combine alternatives with |.
@@ -385,3 +437,4 @@ If you do not restart between deploys, proactively refresh cache using invalidat
 - On a cache-path miss or revalidation, an origin non-`2xx` is not cached and any existing key is evicted.
 - Invalidation is asynchronous: accept request -> resolve keys by `paths` and `tags` -> delete keys -> recrawl in background. Path invalidation clears all cached query-aware variants for that path.
 - Warmup monitors discovered cache variants and may expand `warmupRequestHeaderPresets` into additional Cartesian request-header combinations.
+- `urlPersister` keeps successfully cached URL identities in a YAML file outside LevelDB and, on start, re-registers them as inactive entries so warmup repopulates the wiped disk cache.

@@ -54,6 +54,18 @@ func (a *statsRuntimeAdapter) RuleDefinitions() []statapi.RuleDefinition {
 	return out
 }
 
+func (a *statsRuntimeAdapter) URLPersisterSnapshot() (statapi.URLPersisterSnapshot, bool) {
+	if a.s.urlp == nil {
+		return statapi.URLPersisterSnapshot{}, false
+	}
+	stats := a.s.urlp.Stats()
+	return statapi.URLPersisterSnapshot{
+		Records:       stats.Records,
+		Restored:      stats.Restored,
+		LastFlushUnix: stats.LastFlushUnix,
+	}, true
+}
+
 func (a *statsRuntimeAdapter) WarmupLoopSnapshots() map[int]statapi.WarmupLoopSnapshot {
 	if a.s.reval == nil {
 		return map[int]statapi.WarmupLoopSnapshot{}
