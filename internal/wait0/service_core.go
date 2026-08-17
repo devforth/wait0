@@ -244,13 +244,36 @@ func (s *Service) Handler() http.Handler {
 }
 
 func (s *Service) pickRule(path string) *Rule {
-	for i := range s.cfg.Rules {
-		r := &s.cfg.Rules[i]
-		if r.Matches(path) {
-			return r
-		}
+	if i := s.pickRuleIndex(path); i >= 0 {
+		return &s.cfg.Rules[i]
 	}
 	return nil
+}
+
+// pickRuleIndex returns the index of the rule that governs path, or -1. Rules
+// are sorted by priority, so the first match is the most specific one the
+// configuration declares.
+func (s *Service) pickRuleIndex(path string) int {
+	for i := range s.cfg.Rules {
+		if s.cfg.Rules[i].Matches(path) {
+			return i
+		}
+	}
+	return -1
+}
+
+// ownsPath reports whether the rule at index is the rule a request for path
+// would actually be served under.
+//
+// Warmup needs this rather than the rule's own matcher. A matcher answers "could
+// this rule apply", which for a catch-all like PathPrefix(/) is true of every
+// path in the cache, including the ones a higher-priority rule governs. Warming
+// by matcher therefore ran a second loop over every path already covered by a
+// more specific rule, doubling origin requests and cache writes for those paths.
+func (s *Service) ownsPath(index int) func(path string) bool {
+	return func(path string) bool {
+		return s.pickRuleIndex(path) == index
+	}
 }
 
 func (s *Service) configureDashboard() {
@@ -310,6 +333,7 @@ func resolveAuthTokenByScope(tokens []AuthTokenConfig, scope string) (id, token 
 }
 
 func (s *Service) startWarmupGroups() {
+	s.warnWarmupGaps()
 	for i := range s.cfg.Rules {
 		r := &s.cfg.Rules[i]
 		if r.warmPause <= 0 || r.warmMax <= 0 {
@@ -324,12 +348,53 @@ func (s *Service) startWarmupGroups() {
 				Match:                rule.Match,
 				PauseBetweenRuns:     rule.warmPause,
 				WarmMax:              rule.warmMax,
-				Matches:              rule.Matches,
+				Matches:              s.ownsPath(ruleID),
 				PresetHeaderNames:    append([]string(nil), rule.warmPresetHeaderNames...),
 				RequestHeaderPresets: cloneStringSliceMap(rule.WarmupRequestHeaderPresets),
 			})
 		}(i, r)
 	}
+}
+
+// warnWarmupGaps reports rules that shadow a warmup loop without declaring one.
+//
+// Because warmup covers only the paths a rule actually governs, a rule with no
+// warmUp block leaves its paths cold even when a broader rule below it warms
+// everything else. That is the right default, since inheriting a less specific
+// rule's schedule is what produced duplicate warmup in the first place, but it is
+// invisible in the config, so say it out loud at startup.
+func (s *Service) warnWarmupGaps() {
+	for i := range s.cfg.Rules {
+		shadowing := &s.cfg.Rules[i]
+		if shadowing.Bypass || (shadowing.warmPause > 0 && shadowing.warmMax > 0) {
+			continue
+		}
+		for j := i + 1; j < len(s.cfg.Rules); j++ {
+			broader := &s.cfg.Rules[j]
+			if broader.warmPause <= 0 || broader.warmMax <= 0 {
+				continue
+			}
+			if !rulesOverlap(shadowing, broader) {
+				continue
+			}
+			log.Printf(
+				"warmup gap: rule %q (priority %d) declares no warmUp and takes precedence over %q (priority %d), so paths under %q are never warmed",
+				shadowing.Match, shadowing.Priority, broader.Match, broader.Priority, shadowing.Match,
+			)
+			break
+		}
+	}
+}
+
+// rulesOverlap reports whether broader would match paths that shadowing governs,
+// which is true exactly when it matches one of shadowing's own prefixes.
+func rulesOverlap(shadowing, broader *Rule) bool {
+	for _, m := range shadowing.matchers {
+		if broader.Matches(m.Prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneStringSliceMap(in map[string][]string) map[string][]string {

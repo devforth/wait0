@@ -247,6 +247,8 @@ With this setting, `/blog?page=1` and `/blog?page=2` are different cache entries
 
 Each warmup rule starts its first loop immediately and processes one complete URL snapshot at up to `maxRequestsAtATime` concurrency. After the full loop finishes, wait0 pauses for `pauseBetweenRuns`, then takes a fresh snapshot and runs again. A value such as `10s` is recommended when you want warmup to restart quickly at full capacity without overlapping loops.
 
+A warmup rule covers only the URLs that the rule itself governs, using the same priority resolution the request path uses. A broad rule such as `PathPrefix(/)` therefore never warms a path that a higher-priority rule already owns, and warmup schedules are not inherited: a rule with no `warmUp` block leaves its own paths cold even when a lower-priority rule warms everything else. Give every rule that needs warming its own `warmUp` block; wait0 logs a `warmup gap` line at startup for each rule that would otherwise silently lose warmup.
+
 Dashboard statistics retain only the latest completed warmup loop per rule. Fastest, slowest, largest, and smallest URL rankings are capped at 10 entries while they are collected, so wait0 does not accumulate warmup history or discarded ranking candidates.
 
 ### URL persister
@@ -437,5 +439,6 @@ If you do not restart between deploys, proactively refresh cache using invalidat
 - On a cache-path miss or revalidation, an origin non-`2xx` is not cached and any existing key is evicted.
 - Invalidation is asynchronous: accept request -> resolve keys by `paths` and `tags` -> delete keys -> recrawl in background. Path invalidation clears all cached query-aware variants for that path.
 - Warmup monitors discovered cache variants and may expand `warmupRequestHeaderPresets` into additional Cartesian request-header combinations.
+- A warmup rule warms only the paths it governs under normal priority resolution, so overlapping rules never warm the same path twice.
 - Storing a response that is byte-identical to the one already in the disk cache refreshes only its metadata record and leaves the stored body untouched, so a warmup loop over unchanged content costs almost no disk writes. `Date` and `Age` are excluded from that comparison, which means a body that never changes keeps the `Date` it was stored with in the disk tier.
 - `urlPersister` keeps successfully cached URL identities in a YAML file outside LevelDB and, on start, re-registers them as inactive entries so warmup repopulates the wiped disk cache.
