@@ -8,7 +8,7 @@ docker buildx create --use
 docker buildx build \
 	--platform=linux/amd64,linux/arm64 \
 	--tag "devforth/wait0:latest" \
-	--tag "devforth/wait0:1.3.0" \
+	--tag "devforth/wait0:1.4.0" \
 	--push \
 	--file "$repo_root/Dockerfile" \
 	"$repo_root"
