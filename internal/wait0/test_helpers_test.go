@@ -89,3 +89,12 @@ func mustRule(t *testing.T, match string) Rule {
 	}
 	return Rule{Match: match, matchers: ms}
 }
+
+func warmableRule(t *testing.T, match string, priority int) Rule {
+	t.Helper()
+	r := mustRule(t, match)
+	r.Priority = priority
+	r.warmPause = time.Minute
+	r.warmMax = 5
+	return r
+}

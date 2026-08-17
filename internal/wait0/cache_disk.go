@@ -70,6 +70,12 @@ func (d *diskCache) Delete(key string) {
 	d.inner.Delete(key)
 }
 
+// SkippedBodyWrites reports how many stores reused the response body already on
+// disk instead of rewriting it.
+func (d *diskCache) SkippedBodyWrites() int64 {
+	return d.inner.SkippedBodyWrites()
+}
+
 func (d *diskCache) evictSome() {
 	d.inner.EvictSomeForTest()
 }

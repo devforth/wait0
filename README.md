@@ -437,4 +437,5 @@ If you do not restart between deploys, proactively refresh cache using invalidat
 - On a cache-path miss or revalidation, an origin non-`2xx` is not cached and any existing key is evicted.
 - Invalidation is asynchronous: accept request -> resolve keys by `paths` and `tags` -> delete keys -> recrawl in background. Path invalidation clears all cached query-aware variants for that path.
 - Warmup monitors discovered cache variants and may expand `warmupRequestHeaderPresets` into additional Cartesian request-header combinations.
+- Storing a response that is byte-identical to the one already in the disk cache refreshes only its metadata record and leaves the stored body untouched, so a warmup loop over unchanged content costs almost no disk writes. `Date` and `Age` are excluded from that comparison, which means a body that never changes keeps the `Date` it was stored with in the disk tier.
 - `urlPersister` keeps successfully cached URL identities in a YAML file outside LevelDB and, on start, re-registers them as inactive entries so warmup repopulates the wiped disk cache.

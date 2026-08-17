@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/syndtr/goleveldb/leveldb"
@@ -22,6 +23,20 @@ type diskMeta struct {
 	VariantKind    string
 	VariantBaseKey string
 	VariantValues  []string
+
+	// BodyHash, BodyLen and ShapeHash fingerprint the blob stored under "e:" so
+	// a store carrying an identical response can skip rewriting it. All three
+	// are zero in metadata written before they existed, which reads as "no
+	// match" and makes the first store after an upgrade rewrite the blob.
+	BodyHash  uint32
+	BodyLen   int64
+	ShapeHash uint32
+
+	// StoredAt and RevalidatedBy mirror the stamps inside the blob, which a
+	// skipped body rewrite leaves untouched. Peek overlays these on the way out
+	// so a key whose body has stopped changing never looks stale.
+	StoredAt      int64
+	RevalidatedBy string
 }
 
 type diskOp struct {
@@ -43,6 +58,11 @@ type Disk struct {
 	mu        sync.Mutex
 	index     map[string]diskMeta
 	totalSize int64
+
+	// skippedBodyWrites counts stores that reused the blob already on disk. It
+	// exists so tests can assert the redundant-write gate actually engaged
+	// rather than infer it from timing.
+	skippedBodyWrites atomic.Int64
 
 	ops  chan diskOp
 	done chan struct{}
@@ -107,6 +127,7 @@ func (d *Disk) MetaSnapshot() map[string]EntryMeta {
 			Inactive:            m.Inactive,
 			DiscoveredBy:        m.DiscoveredBy,
 			LastRefreshUnixNano: lastRefresh,
+			StoredAtUnix:        m.StoredAt,
 			VariantKind:         m.VariantKind,
 			VariantBaseKey:      m.VariantBaseKey,
 			VariantValues:       append([]string(nil), m.VariantValues...),
@@ -153,7 +174,38 @@ func (d *Disk) Peek(key string) (Entry, bool) {
 	if err := decodeGob(b, &ent); err != nil {
 		return Entry{}, false
 	}
+	d.mu.Lock()
+	meta, known := d.index[key]
+	d.mu.Unlock()
+	if known {
+		restoreStamps(&ent, meta)
+	}
 	return ent, true
+}
+
+// restoreStamps overlays the freshness stamps held in the metadata record, which
+// every store rewrites, over the ones baked into the blob, which a store
+// carrying an unchanged response does not.
+//
+// This is what keeps the redundant-write gate from being a regression: without
+// it a key whose body has stopped changing would keep serving the StoredAt of
+// its last real change, proxy.IsStale would call it stale forever, and every
+// request that reached the disk tier would kick off a background revalidation.
+func restoreStamps(ent *Entry, meta diskMeta) {
+	if meta.StoredAt > ent.StoredAt {
+		ent.StoredAt = meta.StoredAt
+	}
+	if meta.LastRefresh > ent.RevalidatedAt {
+		ent.RevalidatedAt = meta.LastRefresh
+		if meta.RevalidatedBy != "" {
+			ent.RevalidatedBy = meta.RevalidatedBy
+		}
+	}
+}
+
+// SkippedBodyWrites reports how many stores reused the blob already on disk.
+func (d *Disk) SkippedBodyWrites() int64 {
+	return d.skippedBodyWrites.Load()
 }
 
 func (d *Disk) Get(key string) (Entry, bool) {
@@ -198,16 +250,29 @@ func (d *Disk) EvictSomeForTest() {
 	d.evictSome()
 }
 
+// loadIndex rebuilds the in-memory index from the persisted metadata records.
+//
+// A metadata record whose blob is missing is dropped rather than indexed. Stores
+// reuse the blob a metadata record describes instead of rewriting it, so an
+// indexed key with no blob would never be repaired and would answer every read
+// with a miss forever. Batches are atomic, so the pairing can only break when an
+// unsynced journal tail is lost to a machine crash, and open is the one moment
+// that is observable.
 func (d *Disk) loadIndex() error {
 	it := d.db.NewIterator(util.BytesPrefix([]byte("m:")), nil)
 	defer it.Release()
 
 	var total int64
 	idx := map[string]diskMeta{}
+	orphans := make([][]byte, 0)
 	for it.Next() {
 		key := string(bytes.TrimPrefix(it.Key(), []byte("m:")))
 		var meta diskMeta
 		if err := decodeGob(it.Value(), &meta); err != nil {
+			continue
+		}
+		if ok, err := d.db.Has([]byte("e:"+key), nil); err != nil || !ok {
+			orphans = append(orphans, append([]byte("m:"), key...))
 			continue
 		}
 		idx[key] = meta
@@ -215,6 +280,13 @@ func (d *Disk) loadIndex() error {
 	}
 	if err := it.Error(); err != nil {
 		return err
+	}
+	if len(orphans) > 0 {
+		batch := new(leveldb.Batch)
+		for _, key := range orphans {
+			batch.Delete(key)
+		}
+		_ = d.db.Write(batch, nil)
 	}
 	d.mu.Lock()
 	d.index = idx
@@ -262,9 +334,17 @@ func (d *Disk) applyPutOrTouch(key string, ent *Entry, accessUnix int64) {
 		if lastRefresh <= 0 && ent.StoredAt > 0 {
 			lastRefresh = ent.StoredAt * int64(time.Second)
 		}
+		bodyLen := int64(len(ent.Body))
+		shape := entryShapeHash(*ent)
 
 		d.mu.Lock()
 		old := d.index[key]
+		// A store that carries the response already on disk refreshes only the
+		// metadata record, so the blob and therefore the accounted size stay put.
+		reuseBlob := blobUpToDate(old, ent.Hash32, bodyLen, shape)
+		if reuseBlob {
+			size = old.Size
+		}
 		if old.Size > 0 {
 			d.totalSize -= old.Size
 		}
@@ -274,6 +354,11 @@ func (d *Disk) applyPutOrTouch(key string, ent *Entry, accessUnix int64) {
 		meta.Inactive = ent.Inactive
 		meta.DiscoveredBy = ent.DiscoveredBy
 		meta.LastRefresh = lastRefresh
+		meta.StoredAt = ent.StoredAt
+		meta.RevalidatedBy = ent.RevalidatedBy
+		meta.BodyHash = ent.Hash32
+		meta.BodyLen = bodyLen
+		meta.ShapeHash = shape
 		meta.VariantKind = ""
 		meta.VariantBaseKey = ""
 		meta.VariantValues = nil
@@ -288,7 +373,11 @@ func (d *Disk) applyPutOrTouch(key string, ent *Entry, accessUnix int64) {
 		max := d.maxBytes
 		d.mu.Unlock()
 
-		batch.Put([]byte("e:"+key), b)
+		if reuseBlob {
+			d.skippedBodyWrites.Add(1)
+		} else {
+			batch.Put([]byte("e:"+key), b)
+		}
 		mb, _ := encodeGob(meta)
 		batch.Put([]byte("m:"+key), mb)
 		_ = d.db.Write(batch, nil)
