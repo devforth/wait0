@@ -2,8 +2,11 @@
 
 > Ultra-fast cache-first reverse proxy for dynamic SSR workloads.
 
+[![Watch on YouTube](https://markdown-videos-api.jorgenkh.no/youtube/pnCv1k0WZH0)](https://youtu.be/pnCv1k0WZH0)
+
 `wait0` serves cached HTML instantly and revalidates in the background.
 It is designed for Next.js/Nuxt.js and other dynamic origins where latency and origin offload matter.
+
 
 - GitHub: https://github.com/devforth/wait0
 - Docker Hub: https://hub.docker.com/r/devforth/wait0
