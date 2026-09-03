@@ -196,6 +196,8 @@ func TestController_Once_Branches(t *testing.T) {
 		respStatus  int
 		cacheCtl    string
 		contentType string
+		responseHdr http.Header
+		targetHdr   http.Header
 		body        string
 		sendMarkers bool
 		doErr       error
@@ -280,6 +282,28 @@ func TestController_Once_Branches(t *testing.T) {
 			wantDeleted: true,
 		},
 		{
+			name:        "delete response that sets cookie",
+			hasCur:      true,
+			cur:         Entry{Hash32: 1},
+			respStatus:  http.StatusOK,
+			responseHdr: http.Header{"Set-Cookie": {"session=secret"}},
+			body:        "private",
+			wantKind:    "deleted",
+			wantChanged: true,
+			wantDeleted: true,
+		},
+		{
+			name:        "delete unpartitioned credential response",
+			hasCur:      true,
+			cur:         Entry{Hash32: 1},
+			respStatus:  http.StatusOK,
+			targetHdr:   http.Header{"Authorization": {"Bearer secret"}},
+			body:        "private",
+			wantKind:    "deleted",
+			wantChanged: true,
+			wantDeleted: true,
+		},
+		{
 			name:        "origin error",
 			doErr:       errors.New("origin down"),
 			wantKind:    "error",
@@ -304,7 +328,7 @@ func TestController_Once_Branches(t *testing.T) {
 				if tc.doErr != nil {
 					return nil, tc.doErr
 				}
-				h := http.Header{}
+				h := proxy.CloneHeader(tc.responseHdr)
 				if tc.cacheCtl != "" {
 					h.Set("Cache-Control", tc.cacheCtl)
 				}
@@ -323,7 +347,7 @@ func TestController_Once_Branches(t *testing.T) {
 			unchangedLog := &captureLogger{}
 			c := NewController(rt, make(chan struct{}, 1), make(chan struct{}), &wg, false, nil, unchangedLog, nil)
 
-			res := c.Once(context.Background(), Target{Key: "/page", Path: "/page", Query: "a=1"}, tc.by)
+			res := c.Once(context.Background(), Target{Key: "/page", Path: "/page", Query: "a=1", Headers: tc.targetHdr}, tc.by)
 
 			if res.Kind != tc.wantKind {
 				t.Fatalf("kind = %q, want %q", res.Kind, tc.wantKind)

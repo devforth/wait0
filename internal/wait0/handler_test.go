@@ -46,6 +46,121 @@ func TestHandle_CacheMissThenHit(t *testing.T) {
 	}
 }
 
+func TestHandle_PrivateCookieResponseIsNeverShared(t *testing.T) {
+	var hits atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		if cookie, err := r.Cookie("session"); err == nil && cookie.Value == "alice-secret" {
+			w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+			w.Header().Set("Vary", "Cookie")
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: "alice-secret", Path: "/", HttpOnly: true})
+			fmt.Fprint(w, "signed in as alice")
+			return
+		}
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		fmt.Fprint(w, "anonymous")
+	}))
+	defer origin.Close()
+
+	rule := mustRule(t, "PathPrefix(/)")
+	s := newTestService(t, origin.URL, []Rule{rule})
+
+	aliceRequest := httptest.NewRequest(http.MethodGet, "http://wait0.local/account", nil)
+	aliceRequest.AddCookie(&http.Cookie{Name: "session", Value: "alice-secret"})
+	aliceResponse := httptest.NewRecorder()
+	s.Handler().ServeHTTP(aliceResponse, aliceRequest)
+	if got := aliceResponse.Result().Header.Get("X-Wait0"); got != "bypass" {
+		t.Fatalf("Alice X-Wait0 = %q, want bypass", got)
+	}
+	if got := aliceResponse.Result().Header.Get("X-Wait0-Reason"); got != proxy.CacheabilityCacheControl {
+		t.Fatalf("Alice X-Wait0-Reason = %q, want %q", got, proxy.CacheabilityCacheControl)
+	}
+
+	malloryResponse := httptest.NewRecorder()
+	s.Handler().ServeHTTP(malloryResponse, httptest.NewRequest(http.MethodGet, "http://wait0.local/account", nil))
+	if got := malloryResponse.Result().Header.Get("X-Wait0"); got != "miss" {
+		t.Fatalf("anonymous X-Wait0 = %q, want miss", got)
+	}
+	if body := malloryResponse.Body.String(); body != "anonymous" {
+		t.Fatalf("anonymous body = %q", body)
+	}
+	if cookies := malloryResponse.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("anonymous response replayed cookies: %v", cookies)
+	}
+	if got := hits.Load(); got != 2 {
+		t.Fatalf("origin hits = %d, want 2", got)
+	}
+}
+
+func TestHandle_UnsafeLegacyEntryIsEvictedBeforeServing(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "anonymous")
+	}))
+	defer origin.Close()
+
+	rule := mustRule(t, "PathPrefix(/)")
+	s := newTestService(t, origin.URL, []Rule{rule})
+	s.ram.Put("/account", CacheEntry{
+		Status: http.StatusOK,
+		Header: http.Header{
+			"Cache-Control": {"private"},
+			"Content-Type":  {"text/html"},
+			"Set-Cookie":    {"session=alice-secret; Path=/; HttpOnly"},
+		},
+		Body: []byte("signed in as alice"),
+	}, s.disk, s.overflowLog)
+
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "http://wait0.local/account", nil))
+	if got := w.Result().Header.Get("X-Wait0"); got != "miss" {
+		t.Fatalf("X-Wait0 = %q, want miss", got)
+	}
+	if body := w.Body.String(); body != "anonymous" {
+		t.Fatalf("body = %q", body)
+	}
+	if cookies := w.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("legacy cookie was replayed: %v", cookies)
+	}
+}
+
+func TestHandle_OriginRedirectIsNotFollowed(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		fmt.Fprint(w, "internal secret")
+	}))
+	defer target.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/internal", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	rule := mustRule(t, "PathPrefix(/)")
+	s := newTestService(t, origin.URL, []Rule{rule})
+	req := httptest.NewRequest(http.MethodGet, "http://wait0.local/redirect", nil)
+	req.Header.Set("Cookie", "session=victim-secret")
+	req.Header.Set("Authorization", "Bearer victim-secret")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if got := w.Result().StatusCode; got != http.StatusFound {
+		t.Fatalf("status = %d, want %d", got, http.StatusFound)
+	}
+	if got := w.Result().Header.Get("Location"); got != target.URL+"/internal" {
+		t.Fatalf("Location = %q", got)
+	}
+	if got := w.Result().Header.Get("X-Wait0"); got != "ignore-by-status" {
+		t.Fatalf("X-Wait0 = %q, want ignore-by-status", got)
+	}
+	if got := targetHits.Load(); got != 0 {
+		t.Fatalf("redirect target hits = %d, want 0", got)
+	}
+}
+
 func TestHandle_CacheVariantsSplitAndHit(t *testing.T) {
 	var hits atomic.Int32
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

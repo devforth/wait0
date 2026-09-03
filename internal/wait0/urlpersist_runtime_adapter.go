@@ -100,8 +100,8 @@ func (a *urlpersistRuntimeAdapter) SnapshotAccessTimes() map[string]int64 {
 // notePersistedStore forwards a successful cache write to the URL persister.
 // It is called from storeCacheableResponse, which is the single point every
 // fetched origin response passes through, so bypassed requests, non-GET
-// requests and responses rejected by the status, Cache-Control or content-type
-// gates never reach it.
+// requests and responses rejected by the status, shared-cache admission, or
+// content-type gates never reach it.
 func (s *Service) notePersistedStore(key, baseKey string, ent CacheEntry) {
 	if s.urlp == nil {
 		return

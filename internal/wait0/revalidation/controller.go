@@ -170,8 +170,7 @@ func (c *Controller) Once(ctx context.Context, target Target, by string) Result 
 		return res
 	}
 
-	cc := strings.ToLower(resp.Header.Get("Cache-Control"))
-	if strings.Contains(cc, "no-store") || strings.Contains(cc, "no-cache") {
+	if proxy.ResponseCacheabilityReason(req.Header, resp.Header) != "" {
 		if hasCur && !target.PreserveExisting {
 			c.rt.Delete(target.Key)
 			res.Changed = true

@@ -52,12 +52,10 @@ func (f Fetcher) FetchFromOrigin(r *http.Request) (Entry, bool, string, error) {
 		return ent, false, "ignore-by-status", nil
 	}
 
-	cc := strings.ToLower(resp.Header.Get("Cache-Control"))
-	cacheable := true
-	if strings.Contains(cc, "no-store") || strings.Contains(cc, "no-cache") {
-		cacheable = false
+	if reason := ResponseCacheabilityReason(r.Header, resp.Header); reason != "" {
+		return ent, false, reason, nil
 	}
-	return ent, cacheable, "ok", nil
+	return ent, true, "ok", nil
 }
 
 func CopyHeaders(dst, src http.Header) {

@@ -93,6 +93,15 @@ func envCSV(name string) []string {
 	return out
 }
 
+func newOriginHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 func NewService(cfg Config) (*Service, error) {
 	ramMax, err := parseBytes(cfg.Storage.RAM.Max)
 	if err != nil {
@@ -112,7 +121,7 @@ func NewService(cfg Config) (*Service, error) {
 
 	s := &Service{
 		cfg:                   cfg,
-		httpClient:            &http.Client{Timeout: 30 * time.Second},
+		httpClient:            newOriginHTTPClient(30 * time.Second),
 		ram:                   newRAMCache(ramMax),
 		disk:                  disk,
 		bgSem:                 make(chan struct{}, 32),

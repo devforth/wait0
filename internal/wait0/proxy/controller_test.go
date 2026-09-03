@@ -234,6 +234,7 @@ func TestController_Handle_QueryAwareRevalidationUsesCanonicalQuery(t *testing.T
 func TestController_Handle_VariantRevalidationUsesOnlyPersistedSelectorHeaders(t *testing.T) {
 	ent := Entry{
 		Status:        http.StatusOK,
+		Header:        http.Header{"Cache-Control": {"public, max-age=60"}},
 		Body:          []byte("cached"),
 		StoredAt:      time.Now().Add(-2 * time.Minute).Unix(),
 		VariantKind:   "response",
@@ -285,6 +286,36 @@ func TestController_Handle_DiskHitPromotesRAM(t *testing.T) {
 	}
 	if len(rt.writeWait0) != 1 || rt.writeWait0[0] != "hit" {
 		t.Fatalf("writeWait0 = %v, want [hit]", rt.writeWait0)
+	}
+}
+
+func TestController_Handle_CredentialedRequestDoesNotConsumeOrEvictUnmarkedEntry(t *testing.T) {
+	rt := &fakeRuntime{
+		ramEnt: Entry{
+			Status: http.StatusOK,
+			Header: http.Header{"Content-Type": {"text/html"}},
+			Body:   []byte("anonymous cached response"),
+		},
+		ramOK:           true,
+		originEnt:       Entry{Status: http.StatusOK, Header: http.Header{"Content-Type": {"text/html"}}, Body: []byte("private origin response")},
+		originCacheable: false,
+		originStatus:    CacheabilityCredentials,
+	}
+	c := NewController(rt)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "http://wait0.local/account", nil)
+	r.Header.Set("Authorization", "Bearer secret")
+
+	c.Handle(w, r)
+
+	if body := w.Body.String(); body != "private origin response" {
+		t.Fatalf("body = %q", body)
+	}
+	if got := w.Result().Header.Get("X-Wait0"); got != "bypass" {
+		t.Fatalf("X-Wait0 = %q, want bypass", got)
+	}
+	if len(rt.deleted) != 0 {
+		t.Fatalf("safe anonymous entry was evicted: %v", rt.deleted)
 	}
 }
 

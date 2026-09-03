@@ -94,12 +94,18 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if ok && selected.VariantKind != "manifest" && !selected.Inactive {
-			c.rt.WriteEntryWithStats(w, selected, "hit", "")
-			if rule != nil && rule.Expiration > 0 && IsStale(selected, rule.Expiration) {
-				revalidationHeaders := CloneHeader(selected.VariantRequestHeaders)
-				c.rt.RevalidateAsync(selectedKey, path, cacheQuery, revalidationHeaders, revalidationHeaders.Get("Host"))
+			reason := CachedResponseCacheabilityReason(r.Header, selected)
+			if reason == "" {
+				c.rt.WriteEntryWithStats(w, selected, "hit", "")
+				if rule != nil && rule.Expiration > 0 && IsStale(selected, rule.Expiration) {
+					revalidationHeaders := CloneHeader(selected.VariantRequestHeaders)
+					c.rt.RevalidateAsync(selectedKey, path, cacheQuery, revalidationHeaders, revalidationHeaders.Get("Host"))
+				}
+				return
 			}
-			return
+			if reason != CacheabilityCredentials {
+				c.rt.DeleteKey(selectedKey)
+			}
 		}
 	}
 
@@ -117,7 +123,11 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !cacheable {
-		c.rt.WriteEntryWithStats(w, respEnt, "bypass", "non-cacheable-cache-control")
+		reason := statusKind
+		if reason == "" || reason == "ok" {
+			reason = CacheabilityCacheControl
+		}
+		c.rt.WriteEntryWithStats(w, respEnt, "bypass", reason)
 		return
 	}
 

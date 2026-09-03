@@ -38,6 +38,9 @@ rules:
   - match: PathPrefix(/blog)
     priority: 1
     varyByQueryParams: ['page']
+    # Replace sessionid with every cookie that authenticates your users.
+    bypassWhenCookies: ['sessionid']
+    bypassWhenRequestHeaders: ['Authorization']
     # Stale-after signal: serve cached content, then refresh in background.
     expiration: '1m'
 
@@ -45,6 +48,8 @@ rules:
     priority: 2
     # Defaults to HTML and XHTML, keeping static assets out of wait0.
     cachableContentType: ['text/html', 'application/xhtml+xml']
+    bypassWhenCookies: ['sessionid']
+    bypassWhenRequestHeaders: ['Authorization']
     expiration: '1m'
 ```
 
@@ -147,7 +152,7 @@ Notes:
 
 wait0 checks RAM, then disk, and waits for the origin only on a cache miss. A cached response is returned immediately. **Even when it is older than `expiration`, wait0 serves it first and refreshes it asynchronously.** Therefore, `expiration: '1m'` is a stale-after signal, not a hard expiry or eviction.
 
-wait0 caches only `GET` responses with a `2xx` status, an allowed `Content-Type`, and no `Cache-Control: no-cache` or `no-store` directive. `cachableContentType` defaults to `text/html` and `application/xhtml+xml`, including values with parameters such as `text/html; charset=utf-8`. This keeps wait0 focused on controllable dynamic SWR; static assets should normally be cached by a CDN, Nginx, and browser caching.
+wait0 caches only `GET` responses that are safe for its shared cache. In addition to requiring a `2xx` status and an allowed `Content-Type`, it rejects private or immediately stale cache-control directives, `Set-Cookie`, and `Vary` headers that are not covered by the cache identity. Requests carrying `Cookie` or `Authorization` do not populate an unpartitioned cache unless the origin explicitly permits shared caching or partitions the response with `Cache-Variant`. `cachableContentType` defaults to `text/html` and `application/xhtml+xml`, including values with parameters such as `text/html; charset=utf-8`. This keeps wait0 focused on controllable dynamic SWR; static assets should normally be cached by a CDN, Nginx, and browser caching.
 
 `logging.debug_headers` controls wait0 diagnostic response headers and the markers sent to the origin during revalidation. Omit it to enable every supported header, use a subset to select individual headers, or set `debug_headers: []` to disable all diagnostics. Functional headers such as `X-Wait0-CSRF` and origin-provided `X-Wait0-Tag` are not controlled by this option.
 
@@ -180,13 +185,16 @@ wait0 can also fetch an origin response but decline to store it:
 
 | Origin result | `X-Wait0` | `X-Wait0-Reason` |
 |---------------|-----------|------------------|
-| `Cache-Control` contains `no-cache` or `no-store` | `bypass` | `non-cacheable-cache-control` |
+| `Cache-Control` contains `private`, `no-cache`, `no-store`, or a zero/invalid `max-age` or `s-maxage` | `bypass` | `non-cacheable-cache-control` |
+| Response carries `Set-Cookie` | `bypass` | `non-cacheable-set-cookie` |
+| `Vary` is `*` or names a header not normalized by wait0 or covered by `Cache-Variant` | `bypass` | `non-cacheable-vary` |
+| Request carries `Cookie` or `Authorization` without shared-cache opt-in or a matching `Cache-Variant` | `bypass` | `non-cacheable-request-credentials` |
 | `Content-Type` is missing, malformed, or not allowed by `cachableContentType` | `bypass` | `non-cacheable-content-type` |
 | A `Cache-Variant` declaration cannot compile or evaluate | `bypass` | `cache-variant-expression-error` |
 | Status is not `2xx` | `ignore-by-status` | `non-cacheable-status` |
 | Origin request fails | `bad-gateway` | `origin-error` |
 
-A non-cacheable miss response is returned to the client without being stored. If background revalidation receives a disallowed content type, either cache-control directive, or a non-`2xx` status, the existing entry is deleted; a network error leaves it available. A stale cached response is still reported as `X-Wait0: hit`.
+A non-cacheable miss response is returned to the client without being stored. If a legacy cache entry violates these response rules, wait0 evicts it instead of serving it. If background revalidation receives a disallowed response or a non-`2xx` status, the existing entry is deleted; a network error leaves it available. A stale cached response is still reported as `X-Wait0: hit`.
 
 ### Cache variants
 

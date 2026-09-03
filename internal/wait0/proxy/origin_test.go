@@ -24,8 +24,8 @@ func TestFetchFromOrigin_NoStoreIsNotCacheable(t *testing.T) {
 	if cacheable {
 		t.Fatalf("expected non-cacheable response")
 	}
-	if statusKind != "ok" {
-		t.Fatalf("statusKind = %q, want ok", statusKind)
+	if statusKind != CacheabilityCacheControl {
+		t.Fatalf("statusKind = %q, want %q", statusKind, CacheabilityCacheControl)
 	}
 	if ent.Hash32 == 0 {
 		t.Fatalf("expected hash to be set")

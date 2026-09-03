@@ -1,7 +1,10 @@
 package wait0
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -24,6 +27,42 @@ func TestEnvBool(t *testing.T) {
 	}
 	if got := envBool(key, true); !got {
 		t.Fatalf("expected fallback default true")
+	}
+}
+
+func TestOriginHTTPClientDoesNotFollowRedirects(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/internal", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	req, err := http.NewRequest(http.MethodGet, origin.URL+"/redirect", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Cookie", "session=victim-secret")
+	req.Header.Set("Authorization", "Bearer victim-secret")
+	resp, err := newOriginHTTPClient(2 * time.Second).Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusFound)
+	}
+	if got := resp.Header.Get("Location"); got != target.URL+"/internal" {
+		t.Fatalf("Location = %q", got)
+	}
+	if got := targetHits.Load(); got != 0 {
+		t.Fatalf("redirect target hits = %d, want 0", got)
 	}
 }
 

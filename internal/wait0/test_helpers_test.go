@@ -2,7 +2,6 @@ package wait0
 
 import (
 	"log"
-	"net/http"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -44,7 +43,7 @@ func newTestService(t *testing.T, origin string, rules []Rule) *Service {
 
 	s := &Service{
 		cfg:                   cfg,
-		httpClient:            &http.Client{Timeout: 2 * time.Second},
+		httpClient:            newOriginHTTPClient(2 * time.Second),
 		ram:                   newRAMCache(8 * 1024 * 1024),
 		disk:                  disk,
 		bgSem:                 make(chan struct{}, 8),
