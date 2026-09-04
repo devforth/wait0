@@ -16,10 +16,13 @@ type Fetcher struct {
 func (f Fetcher) FetchFromOrigin(r *http.Request) (Entry, bool, string, error) {
 	originURL := f.Origin + r.URL.RequestURI()
 	ctx := r.Context()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, originURL, nil)
+	req, err := http.NewRequestWithContext(ctx, r.Method, originURL, r.Body)
 	if err != nil {
 		return Entry{}, false, "", err
 	}
+	req.ContentLength = r.ContentLength
+	req.TransferEncoding = append([]string(nil), r.TransferEncoding...)
+	req.Trailer = r.Trailer
 	CopyHeaders(req.Header, r.Header)
 	req.Header.Set("Accept-Encoding", "identity")
 

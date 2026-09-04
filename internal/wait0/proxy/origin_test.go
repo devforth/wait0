@@ -2,11 +2,60 @@ package proxy
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestFetchFromOrigin_PreservesMethodAndBody(t *testing.T) {
+	type receivedRequest struct {
+		method        string
+		body          string
+		contentLength int64
+		contentType   string
+	}
+	received := make(chan receivedRequest, 1)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		received <- receivedRequest{
+			method:        r.Method,
+			body:          string(body),
+			contentLength: r.ContentLength,
+			contentType:   r.Header.Get("Content-Type"),
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer origin.Close()
+
+	f := Fetcher{Client: &http.Client{Timeout: 2 * time.Second}, Origin: origin.URL}
+	const payload = `{"name":"wait0"}`
+	req := httptest.NewRequest(http.MethodPost, "http://wait0.local/api/submit", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+
+	if _, _, _, err := f.FetchFromOrigin(req); err != nil {
+		t.Fatalf("FetchFromOrigin error: %v", err)
+	}
+	got := <-received
+	if got.method != http.MethodPost {
+		t.Fatalf("origin method = %q, want POST", got.method)
+	}
+	if got.body != payload {
+		t.Fatalf("origin body = %q, want %q", got.body, payload)
+	}
+	if got.contentLength != int64(len(payload)) {
+		t.Fatalf("origin content length = %d, want %d", got.contentLength, len(payload))
+	}
+	if got.contentType != "application/json" {
+		t.Fatalf("origin content type = %q, want application/json", got.contentType)
+	}
+}
 
 func TestFetchFromOrigin_NoStoreIsNotCacheable(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
