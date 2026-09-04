@@ -6,9 +6,16 @@ Developer guide for building, running, testing, and operating `wait0`.
 
 ## Requirements
 
-- Go `1.22+`
+- Go `1.27.1+`
 - GNU Make
+- `govulncheck` `v1.7.0+` for `make vulncheck` / `make ci-check`
 - Optional: Docker (for containerized local runs)
+
+Install the pinned vulnerability scanner with:
+
+```bash
+go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+```
 
 ## Local Development
 
@@ -48,8 +55,9 @@ Output binary: `bin/wait0`.
 | `make test` | Runs unit tests | Exit `0` on success |
 | `make test-race` | Runs tests with race detector | Exit `0` and no race reports |
 | `make lint` | Runs `go vet ./...` | No vet issues |
+| `make vulncheck` | Scans source and `bin/wait0` with `govulncheck` | No reachable known vulnerabilities |
 | `make coverage` | Runs coverage gate for `internal/wait0` | Coverage >= configured threshold |
-| `make ci-check` | Full local quality gate (`lint + test + test-race + coverage + build`) | Exit `0` when release-ready |
+| `make ci-check` | Full local quality gate (`lint + test + test-race + coverage + build + vulncheck`) | Exit `0` when release-ready |
 | `make fmt` | Runs `go fmt ./...` | Source files formatted |
 | `make help` | Lists all targets | Human-readable command list |
 

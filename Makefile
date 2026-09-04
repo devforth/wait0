@@ -6,6 +6,7 @@ MAKEFLAGS += --warn-undefined-variables
 MAKEFLAGS += --no-builtin-rules
 
 GO ?= go
+GOVULNCHECK ?= govulncheck
 PROJECT ?= $(notdir $(CURDIR))
 BIN_DIR ?= bin
 BINARY ?= wait0
@@ -23,7 +24,7 @@ COVERAGE_THRESHOLD ?= 80
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test test-race coverage lint fmt dev clean ci ci-check print-version \
+.PHONY: help build test test-race coverage lint vulncheck fmt dev clean ci ci-check print-version \
 	docker-build docker-run docker-stop docker-logs docker-push docker-clean release
 
 help: ## Show available targets
@@ -55,12 +56,16 @@ coverage: ## Run coverage gate for internal/wait0
 lint: ## Run static checks
 	$(GO) vet ./...
 
+vulncheck: build ## Scan source and built binary for known Go vulnerabilities
+	$(GOVULNCHECK) ./...
+	$(GOVULNCHECK) -mode=binary $(BIN_DIR)/$(BINARY)
+
 fmt: ## Format Go sources
 	$(GO) fmt ./...
 
 ci: lint test build ## Run fast CI checks (lint + test + build)
 
-ci-check: lint test test-race coverage build ## Run full local quality gate
+ci-check: lint test test-race coverage build vulncheck ## Run full local quality gate
 
 ##@ Development
 dev: ## Run wait0 with debug config

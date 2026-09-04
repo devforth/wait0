@@ -6,7 +6,7 @@
 wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves from cache instantly and revalidates responses in the background. It targets SSR and other dynamic origin workloads where latency and origin offload are critical.
 
 ## Tech Stack
-- **Language:** Go 1.22
+- **Language:** Go 1.27.1
 - **Framework:** Standard library `net/http`
 - **Database:** LevelDB (embedded disk cache)
 - **ORM:** N/A
@@ -85,6 +85,7 @@ Common commands:
 - `make test-race` — run race-enabled tests
 - `make coverage` — run coverage gate for `internal/wait0`
 - `make lint` — run static checks (`go vet`)
+- `make vulncheck` — scan source and built binary with `govulncheck`
 - `make build` — build the `wait0` binary
-- `make ci-check` — run full local quality gate
+- `make ci-check` — run the full local quality gate, including source and binary vulnerability scans
 - `make docker-build` / `make docker-run` — build and run the container locally
