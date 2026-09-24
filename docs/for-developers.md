@@ -144,7 +144,8 @@ For dashboard:
 | `match` | yes | Supports `PathPrefix(...)` with optional `|` combinations |
 | `priority` | no | Rules are sorted ascending by priority |
 | `bypass` | no | For matching paths, bypass cache completely |
-| `bypassWhenCookies[]` | no | If any listed cookie exists, bypass cache |
+| `bypassWhenCookies[]` | no | If any listed cookie exists, bypass cache even when `allowSharedCacheWithCookies` is `false` and the origin sends `Cache-Control: public` |
+| `allowSharedCacheWithCookies` | no | Default `false`; set `true` on public pages whose HTML is identical across cookies so cookie requests can share the anonymous cache entry |
 | `bypassWhenRequestHeaders[]` | no | If any listed request header is present, bypass cache; matching is case-insensitive and empty values count |
 | `cachableContentType[]` | no | Exact cache-eligible media types; defaults to `text/html` and `application/xhtml+xml`; parameters are ignored |
 | `varyByQueryParams[]` | no | Query params that should participate in cache identity for matching paths |

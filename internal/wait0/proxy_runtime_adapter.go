@@ -60,12 +60,13 @@ func (a *proxyRuntimeAdapter) PickRule(path string) *proxy.Rule {
 		return nil
 	}
 	return &proxy.Rule{
-		Bypass:                   r.Bypass,
-		BypassWhenCookies:        append([]string(nil), r.BypassWhenCookies...),
-		BypassWhenRequestHeaders: append([]string(nil), r.BypassWhenRequestHeaders...),
-		CachableContentTypes:     append([]string(nil), r.CachableContentTypes...),
-		VaryByQueryParams:        append([]string(nil), r.VaryByQueryParams...),
-		Expiration:               r.expDur,
+		Bypass:                      r.Bypass,
+		BypassWhenCookies:           append([]string(nil), r.BypassWhenCookies...),
+		AllowSharedCacheWithCookies: r.AllowSharedCacheWithCookies,
+		BypassWhenRequestHeaders:    append([]string(nil), r.BypassWhenRequestHeaders...),
+		CachableContentTypes:        append([]string(nil), r.CachableContentTypes...),
+		VaryByQueryParams:           append([]string(nil), r.VaryByQueryParams...),
+		Expiration:                  r.expDur,
 	}
 }
 
@@ -98,8 +99,8 @@ func (a *proxyRuntimeAdapter) DeleteKey(key string) {
 	a.s.deleteCacheKey(key)
 }
 
-func (a *proxyRuntimeAdapter) FetchFromOrigin(r *http.Request) (proxy.Entry, bool, string, error) {
-	return a.fetcher.FetchFromOrigin(r)
+func (a *proxyRuntimeAdapter) FetchFromOrigin(r *http.Request, allowSharedCacheWithCookies bool) (proxy.Entry, bool, string, error) {
+	return a.fetcher.FetchFromOrigin(r, allowSharedCacheWithCookies)
 }
 
 func (a *proxyRuntimeAdapter) Store(key string, r *http.Request, ent proxy.Entry) (proxy.Entry, error) {

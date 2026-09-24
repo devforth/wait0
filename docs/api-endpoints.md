@@ -43,7 +43,7 @@ This is the default request path handled by the proxy controller.
 | Origin `2xx` has a disallowed cache-control directive | Serve without storing | `bypass` | `non-cacheable-cache-control` |
 | Origin `2xx` carries `Set-Cookie` | Serve without storing | `bypass` | `non-cacheable-set-cookie` |
 | Origin `2xx` has an unsupported or unkeyed `Vary` value | Serve without storing | `bypass` | `non-cacheable-vary` |
-| Request has credentials without explicit shared-cache handling | Serve without storing | `bypass` | `non-cacheable-request-credentials` |
+| Request has cookies without rule or origin shared-cache opt-in, or has authorization without origin shared-cache opt-in | Serve without storing | `bypass` | `non-cacheable-request-credentials` |
 | Origin non-`2xx` | Do not cache, evict existing key | `ignore-by-status` | `non-cacheable-status` |
 | Origin fetch/network failure | Gateway error | `bad-gateway` | `origin-error` |
 
@@ -56,7 +56,7 @@ An origin response is cacheable only when:
 - `Cache-Control` does not include `private`, `no-store`, `no-cache`, a zero/invalid `max-age`, or a zero/invalid `s-maxage`,
 - the response does not carry `Set-Cookie`,
 - `Vary` is not `*` and each named header is normalized by wait0 (`Host` and `Accept-Encoding`) or represented by `Cache-Variant`,
-- a request carrying `Cookie` or `Authorization` is explicitly shareable (`Cache-Control: public` or a positive `s-maxage`) or the corresponding header is represented by `Cache-Variant`, and
+- a request carrying `Cookie` is allowed by the rule (`allowSharedCacheWithCookies: true`), explicitly shareable according to the origin (`Cache-Control: public` or a positive `s-maxage`), or partitioned by `Cache-Variant`; `Authorization` still requires origin shared-cache permission or a matching `Cache-Variant`, and
 - every declared `Cache-Variant` expression compiles, evaluates for the request, and returns a string.
 
 `cachableContentType` defaults to `text/html` and `application/xhtml+xml`. Matching is case-insensitive and ignores media-type parameters such as `charset=utf-8`. A missing or malformed `Content-Type` is not cacheable.

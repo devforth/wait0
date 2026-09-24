@@ -39,7 +39,7 @@ func TestFetchFromOrigin_PreservesMethodAndBody(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://wait0.local/api/submit", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 
-	if _, _, _, err := f.FetchFromOrigin(req); err != nil {
+	if _, _, _, err := f.FetchFromOrigin(req, false); err != nil {
 		t.Fatalf("FetchFromOrigin error: %v", err)
 	}
 	got := <-received
@@ -66,7 +66,7 @@ func TestFetchFromOrigin_NoStoreIsNotCacheable(t *testing.T) {
 
 	f := Fetcher{Client: &http.Client{Timeout: 2 * time.Second}, Origin: origin.URL}
 	req := httptest.NewRequest(http.MethodGet, "http://wait0.local/x", nil)
-	ent, cacheable, statusKind, err := f.FetchFromOrigin(req)
+	ent, cacheable, statusKind, err := f.FetchFromOrigin(req, false)
 	if err != nil {
 		t.Fatalf("FetchFromOrigin error: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestFetchFromOrigin_Non2xxIsIgnoreByStatus(t *testing.T) {
 
 	f := Fetcher{Client: &http.Client{Timeout: 2 * time.Second}, Origin: origin.URL}
 	req := httptest.NewRequest(http.MethodGet, "http://wait0.local/x", nil)
-	ent, cacheable, statusKind, err := f.FetchFromOrigin(req)
+	ent, cacheable, statusKind, err := f.FetchFromOrigin(req, false)
 	if err != nil {
 		t.Fatalf("FetchFromOrigin error: %v", err)
 	}

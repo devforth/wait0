@@ -20,19 +20,19 @@ var cacheabilityVariantEngine = cachevariant.NewEngine()
 // ResponseCacheabilityReason returns an empty string when an origin response
 // is safe to put in the shared cache. It deliberately fails closed for origin
 // signals wait0 cannot honor.
-func ResponseCacheabilityReason(requestHeaders, responseHeaders http.Header) string {
-	return responseCacheabilityReason(requestHeaders, responseHeaders, true)
+func ResponseCacheabilityReason(requestHeaders, responseHeaders http.Header, allowSharedCacheWithCookies bool) string {
+	return responseCacheabilityReason(requestHeaders, responseHeaders, true, allowSharedCacheWithCookies)
 }
 
 // CachedResponseCacheabilityReason also verifies that a Cache-Variant response
 // was actually stored as a concrete variant. This prevents an entry created by
 // an older or inconsistent cache implementation from treating the header alone
 // as proof that its cache key was partitioned.
-func CachedResponseCacheabilityReason(requestHeaders http.Header, ent Entry) string {
-	return responseCacheabilityReason(requestHeaders, ent.Header, ent.VariantKind == "response")
+func CachedResponseCacheabilityReason(requestHeaders http.Header, ent Entry, allowSharedCacheWithCookies bool) string {
+	return responseCacheabilityReason(requestHeaders, ent.Header, ent.VariantKind == "response", allowSharedCacheWithCookies)
 }
 
-func responseCacheabilityReason(requestHeaders, responseHeaders http.Header, allowCacheVariant bool) string {
+func responseCacheabilityReason(requestHeaders, responseHeaders http.Header, allowCacheVariant, allowSharedCacheWithCookies bool) string {
 	directives := parseCacheControl(responseHeaders.Values("Cache-Control"))
 	for _, name := range []string{"private", "no-store", "no-cache"} {
 		if _, ok := directives[name]; ok {
@@ -57,7 +57,9 @@ func responseCacheabilityReason(requestHeaders, responseHeaders http.Header, all
 	requestHasAuthorization := headerPresent(requestHeaders, "Authorization")
 	public := hasBareDirective(directives, "public")
 	_, sharedMaxAge := directives["s-maxage"]
-	credentialsNeedCoverage := (requestHasCookie || requestHasAuthorization) && !public && !sharedMaxAge
+	cookieNeedsCoverage := requestHasCookie && !allowSharedCacheWithCookies && !public && !sharedMaxAge
+	authorizationNeedsCoverage := requestHasAuthorization && !public && !sharedMaxAge
+	credentialsNeedCoverage := cookieNeedsCoverage || authorizationNeedsCoverage
 	needsVariantHeaders := invalidVary || credentialsNeedCoverage
 	for _, name := range varyNames {
 		if !normalizedOriginRequestHeader(name) {
@@ -82,16 +84,14 @@ func responseCacheabilityReason(requestHeaders, responseHeaders http.Header, all
 		}
 	}
 
-	// Credential-bearing requests never populate a shared, unpartitioned cache
-	// unless the origin opts in explicitly. Cache-Control: public and a positive
-	// s-maxage are standard shared-cache signals; Cache-Variant is wait0's
-	// explicit mechanism for partitioning by a request header.
-	if requestHasCookie && !public && !sharedMaxAge {
+	// The cookie rule can opt into shared caching for pages whose HTML does not
+	// depend on cookies. Authorization still requires origin opt-in or a variant.
+	if cookieNeedsCoverage {
 		if _, ok := covered["cookie"]; !ok {
 			return CacheabilityCredentials
 		}
 	}
-	if requestHasAuthorization && !public && !sharedMaxAge {
+	if authorizationNeedsCoverage {
 		if _, ok := covered["authorization"]; !ok {
 			return CacheabilityCredentials
 		}

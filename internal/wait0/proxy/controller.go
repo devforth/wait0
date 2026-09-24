@@ -13,7 +13,7 @@ type Runtime interface {
 	PromoteRAM(key string, ent Entry)
 	ResolveVariant(manifest Entry, r *http.Request) (key string, values []string, err error)
 	DeleteKey(key string)
-	FetchFromOrigin(r *http.Request) (Entry, bool, string, error)
+	FetchFromOrigin(r *http.Request, allowSharedCacheWithCookies bool) (Entry, bool, string, error)
 	Store(key string, r *http.Request, ent Entry) (Entry, error)
 	RevalidateAsync(key, path, query string, headers http.Header, host string)
 	DebugHeaders() DebugHeaderSet
@@ -39,6 +39,7 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 	if rule != nil {
 		varyByQueryParams = rule.VaryByQueryParams
 	}
+	allowSharedCacheWithCookies := rule != nil && rule.AllowSharedCacheWithCookies
 	cacheQuery := CanonicalCacheQuery(r.URL.RawQuery, varyByQueryParams)
 	key := JoinCacheKey(path, cacheQuery)
 
@@ -94,7 +95,7 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if ok && selected.VariantKind != "manifest" && !selected.Inactive {
-			reason := CachedResponseCacheabilityReason(r.Header, selected)
+			reason := CachedResponseCacheabilityReason(r.Header, selected, allowSharedCacheWithCookies)
 			if reason == "" {
 				c.rt.WriteEntryWithStats(w, selected, "hit", "")
 				if rule != nil && rule.Expiration > 0 && IsStale(selected, rule.Expiration) {
@@ -109,7 +110,7 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	respEnt, cacheable, statusKind, err := c.rt.FetchFromOrigin(r)
+	respEnt, cacheable, statusKind, err := c.rt.FetchFromOrigin(r, allowSharedCacheWithCookies)
 	if err != nil {
 		SetWait0Headers(w.Header(), "bad-gateway", "origin-error", c.rt.DebugHeaders())
 		http.Error(w, "bad gateway", http.StatusBadGateway)
@@ -149,7 +150,7 @@ func (c *Controller) Handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Controller) proxyPass(w http.ResponseWriter, r *http.Request, wait0, reason string) {
-	ent, _, _, err := c.rt.FetchFromOrigin(r)
+	ent, _, _, err := c.rt.FetchFromOrigin(r, false)
 	if err != nil {
 		SetWait0Headers(w.Header(), "bad-gateway", "origin-error", c.rt.DebugHeaders())
 		http.Error(w, "bad gateway", http.StatusBadGateway)

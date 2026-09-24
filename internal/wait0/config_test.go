@@ -37,6 +37,7 @@ rules:
   - match: "PathPrefix(/)"
     priority: 1
     bypassWhenRequestHeaders: [" authorization ", "AUTHORIZATION", "X-Preview"]
+    allowSharedCacheWithCookies: true
     cachableContentType: [" Application/JSON; Charset=UTF-8 ", "application/json"]
     varyByQueryParams: [" page ", "lang", "page"]
     expiration: "30s"
@@ -79,6 +80,9 @@ rules:
 	}
 	if got := cfg.Rules[0].BypassWhenRequestHeaders; len(got) != 2 || got[0] != "Authorization" || got[1] != "X-Preview" {
 		t.Fatalf("bypassWhenRequestHeaders = %v", got)
+	}
+	if !cfg.Rules[0].AllowSharedCacheWithCookies || cfg.Rules[1].AllowSharedCacheWithCookies {
+		t.Fatalf("allowSharedCacheWithCookies was not parsed per rule")
 	}
 	wantQueryParams := []string{"lang", "page"}
 	if len(cfg.Rules[0].VaryByQueryParams) != len(wantQueryParams) {

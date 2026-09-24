@@ -7,10 +7,11 @@ import (
 
 func TestResponseCacheabilityReason(t *testing.T) {
 	tests := []struct {
-		name     string
-		request  http.Header
-		response http.Header
-		want     string
+		name                        string
+		request                     http.Header
+		response                    http.Header
+		allowSharedCacheWithCookies bool
+		want                        string
 	}{
 		{
 			name:     "anonymous public response",
@@ -75,6 +76,38 @@ func TestResponseCacheabilityReason(t *testing.T) {
 			want:    CacheabilityCredentials,
 		},
 		{
+			name:                        "cookie request with shared cache opt in",
+			request:                     http.Header{"Cookie": {"_ga=analytics"}},
+			allowSharedCacheWithCookies: true,
+		},
+		{
+			name:                        "authorization still requires coverage with cookie opt in",
+			request:                     http.Header{"Cookie": {"_ga=analytics"}, "Authorization": {"Bearer secret"}},
+			allowSharedCacheWithCookies: true,
+			want:                        CacheabilityCredentials,
+		},
+		{
+			name:                        "cookie opt in does not override private",
+			request:                     http.Header{"Cookie": {"_ga=analytics"}},
+			response:                    http.Header{"Cache-Control": {"private"}},
+			allowSharedCacheWithCookies: true,
+			want:                        CacheabilityCacheControl,
+		},
+		{
+			name:                        "cookie opt in does not override set cookie",
+			request:                     http.Header{"Cookie": {"_ga=analytics"}},
+			response:                    http.Header{"Set-Cookie": {"session=secret"}},
+			allowSharedCacheWithCookies: true,
+			want:                        CacheabilitySetCookie,
+		},
+		{
+			name:                        "cookie opt in does not override vary cookie",
+			request:                     http.Header{"Cookie": {"_ga=analytics"}},
+			response:                    http.Header{"Vary": {"Cookie"}},
+			allowSharedCacheWithCookies: true,
+			want:                        CacheabilityVary,
+		},
+		{
 			name:     "cookie request explicitly public",
 			request:  http.Header{"Cookie": {"session=secret"}},
 			response: http.Header{"Cache-Control": {"public, max-age=60"}},
@@ -115,7 +148,7 @@ func TestResponseCacheabilityReason(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ResponseCacheabilityReason(tc.request, tc.response); got != tc.want {
+			if got := ResponseCacheabilityReason(tc.request, tc.response, tc.allowSharedCacheWithCookies); got != tc.want {
 				t.Fatalf("reason = %q, want %q", got, tc.want)
 			}
 		})
@@ -127,12 +160,12 @@ func TestCachedResponseCacheabilityReasonRequiresConcreteVariantMetadata(t *test
 	header := http.Header{"Cache-Variant": {`header('Cookie')`}}
 
 	legacy := Entry{Header: header}
-	if got := CachedResponseCacheabilityReason(request, legacy); got != CacheabilityCredentials {
+	if got := CachedResponseCacheabilityReason(request, legacy, false); got != CacheabilityCredentials {
 		t.Fatalf("legacy entry reason = %q, want %q", got, CacheabilityCredentials)
 	}
 
 	variant := Entry{Header: header, VariantKind: "response"}
-	if got := CachedResponseCacheabilityReason(request, variant); got != "" {
+	if got := CachedResponseCacheabilityReason(request, variant, false); got != "" {
 		t.Fatalf("concrete variant reason = %q, want cacheable", got)
 	}
 }

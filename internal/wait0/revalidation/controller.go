@@ -29,6 +29,7 @@ type Runtime interface {
 	Origin() string
 	Do(req *http.Request) (*http.Response, error)
 	CachableContentTypes(path string) []string
+	AllowSharedCacheWithCookies(path string) bool
 	ResolveVariantTarget(baseKey string, headers http.Header, host string) (string, bool, error)
 	SendRevalidateMarkers() bool
 	DebugHeaderEnabled(name string) bool
@@ -170,7 +171,7 @@ func (c *Controller) Once(ctx context.Context, target Target, by string) Result 
 		return res
 	}
 
-	if proxy.ResponseCacheabilityReason(req.Header, resp.Header) != "" {
+	if proxy.ResponseCacheabilityReason(req.Header, resp.Header, c.rt.AllowSharedCacheWithCookies(target.Path)) != "" {
 		if hasCur && !target.PreserveExisting {
 			c.rt.Delete(target.Key)
 			res.Changed = true

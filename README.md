@@ -41,8 +41,7 @@ rules:
   - match: PathPrefix(/blog)
     priority: 1
     varyByQueryParams: ['page']
-    # Replace sessionid with every cookie that authenticates your users.
-    bypassWhenCookies: ['sessionid']
+    allowSharedCacheWithCookies: true
     bypassWhenRequestHeaders: ['Authorization']
     # Stale-after signal: serve cached content, then refresh in background.
     expiration: '1m'
@@ -51,7 +50,7 @@ rules:
     priority: 2
     # Defaults to HTML and XHTML, keeping static assets out of wait0.
     cachableContentType: ['text/html', 'application/xhtml+xml']
-    bypassWhenCookies: ['sessionid']
+    allowSharedCacheWithCookies: true
     bypassWhenRequestHeaders: ['Authorization']
     expiration: '1m'
 ```
@@ -155,7 +154,7 @@ Notes:
 
 wait0 checks RAM, then disk, and waits for the origin only on a cache miss. A cached response is returned immediately. **Even when it is older than `expiration`, wait0 serves it first and refreshes it asynchronously.** Therefore, `expiration: '1m'` is a stale-after signal, not a hard expiry or eviction.
 
-wait0 caches only `GET` responses that are safe for its shared cache. In addition to requiring a `2xx` status and an allowed `Content-Type`, it rejects private or immediately stale cache-control directives, `Set-Cookie`, and `Vary` headers that are not covered by the cache identity. Requests carrying `Cookie` or `Authorization` do not populate an unpartitioned cache unless the origin explicitly permits shared caching or partitions the response with `Cache-Variant`. `cachableContentType` defaults to `text/html` and `application/xhtml+xml`, including values with parameters such as `text/html; charset=utf-8`. This keeps wait0 focused on controllable dynamic SWR; static assets should normally be cached by a CDN, Nginx, and browser caching.
+wait0 caches only `GET` responses that are safe for its shared cache. In addition to requiring a `2xx` status and an allowed `Content-Type`, it rejects private or immediately stale cache-control directives, `Set-Cookie`, and `Vary` headers that are not covered by the cache identity. Requests carrying `Cookie` do not populate an unpartitioned cache unless the matching rule sets `allowSharedCacheWithCookies: true`, the origin explicitly permits shared caching, or `Cache-Variant` partitions the response. `Authorization` still requires origin shared-cache permission or a matching `Cache-Variant`. `cachableContentType` defaults to `text/html` and `application/xhtml+xml`, including values with parameters such as `text/html; charset=utf-8`. This keeps wait0 focused on controllable dynamic SWR; static assets should normally be cached by a CDN, Nginx, and browser caching.
 
 `logging.debug_headers` controls wait0 diagnostic response headers and the markers sent to the origin during revalidation. Omit it to enable every supported header, use a subset to select individual headers, or set `debug_headers: []` to disable all diagnostics. Functional headers such as `X-Wait0-CSRF` and origin-provided `X-Wait0-Tag` are not controlled by this option.
 
@@ -169,11 +168,25 @@ rules:
     bypass: true
 
   - match: PathPrefix(/)
+    allowSharedCacheWithCookies: true
     bypassWhenCookies: ['sessionid']
     bypassWhenRequestHeaders: ['Authorization']
 ```
 
-`bypass: true` applies to every request matching the rule. `bypassWhenCookies` applies when any named cookie is present. `bypassWhenRequestHeaders` applies when any named request header is present; header names are matched case-insensitively, and an explicitly present empty header still triggers the bypass. Bypassed and non-`GET` requests are sent upstream as bodyless `GET` requests.
+`allowSharedCacheWithCookies: true` is recommended for public landing pages and blogs whose HTML does not depend on cookies. It lets cookie-bearing requests share the same cache entry as anonymous requests without requiring an origin `Cache-Control: public` header. It defaults to `false`; use `bypassWhenCookies` for any session cookies that must still skip the cache. On a hit wait0 serves the cached response without contacting the origin, so only enable this when cookies cannot change the response. `Authorization` still needs origin shared-cache permission or a `Cache-Variant`; response `Set-Cookie`, disallowed `Cache-Control`, and uncovered `Vary` still prevent storage on a miss.
+
+`bypass: true` applies to every request matching the rule. `bypassWhenCookies` applies when any named cookie is present and skips the cache before lookup, even if `allowSharedCacheWithCookies`, origin `Cache-Control: public`, or `Cache-Variant` would otherwise permit caching. This is useful for session cookies on a mostly public site; public sites without session cookies can omit it. `bypassWhenRequestHeaders` applies when any named request header is present; header names are matched case-insensitively, and an explicitly present empty header still triggers the bypass. Bypassed and non-`GET` requests are sent upstream as bodyless `GET` requests.
+
+For example, even with `allowSharedCacheWithCookies: false` (the default), an origin response with `Cache-Control: public` can be cached for requests carrying analytics cookies. The named session cookie still forces a bypass:
+
+```yaml
+rules:
+  - match: PathPrefix(/)
+    allowSharedCacheWithCookies: false
+    bypassWhenCookies: ['sessionid']
+```
+
+With an origin response marked `Cache-Control: public`, `Cookie: _ga=123` can get a cache hit, while `Cookie: sessionid=abc` always bypasses the cache.
 
 When diagnostic headers are enabled, request-side decisions are reported as follows:
 
@@ -191,7 +204,7 @@ wait0 can also fetch an origin response but decline to store it:
 | `Cache-Control` contains `private`, `no-cache`, `no-store`, or a zero/invalid `max-age` or `s-maxage` | `bypass` | `non-cacheable-cache-control` |
 | Response carries `Set-Cookie` | `bypass` | `non-cacheable-set-cookie` |
 | `Vary` is `*` or names a header not normalized by wait0 or covered by `Cache-Variant` | `bypass` | `non-cacheable-vary` |
-| Request carries `Cookie` or `Authorization` without shared-cache opt-in or a matching `Cache-Variant` | `bypass` | `non-cacheable-request-credentials` |
+| Request carries `Cookie` without rule or origin shared-cache opt-in, or `Authorization` without origin shared-cache opt-in, and lacks a matching `Cache-Variant` | `bypass` | `non-cacheable-request-credentials` |
 | `Content-Type` is missing, malformed, or not allowed by `cachableContentType` | `bypass` | `non-cacheable-content-type` |
 | A `Cache-Variant` declaration cannot compile or evaluate | `bypass` | `cache-variant-expression-error` |
 | Status is not `2xx` | `ignore-by-status` | `non-cacheable-status` |
@@ -378,6 +391,8 @@ rules:
     priority: 2
     # Bypasses cache when any named cookie is present.
     bypassWhenCookies: ['sessionid']
+    # Share public pages across analytics and other non-personalizing cookies.
+    allowSharedCacheWithCookies: true
     # Bypasses cache when any named request header is present.
     bypassWhenRequestHeaders: ['Authorization']
     # Exact media types eligible for wait0 caching. Parameters such as charset

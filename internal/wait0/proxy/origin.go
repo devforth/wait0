@@ -13,7 +13,7 @@ type Fetcher struct {
 	Origin string
 }
 
-func (f Fetcher) FetchFromOrigin(r *http.Request) (Entry, bool, string, error) {
+func (f Fetcher) FetchFromOrigin(r *http.Request, allowSharedCacheWithCookies bool) (Entry, bool, string, error) {
 	originURL := f.Origin + r.URL.RequestURI()
 	ctx := r.Context()
 	req, err := http.NewRequestWithContext(ctx, r.Method, originURL, r.Body)
@@ -55,7 +55,7 @@ func (f Fetcher) FetchFromOrigin(r *http.Request) (Entry, bool, string, error) {
 		return ent, false, "ignore-by-status", nil
 	}
 
-	if reason := ResponseCacheabilityReason(r.Header, resp.Header); reason != "" {
+	if reason := ResponseCacheabilityReason(r.Header, resp.Header, allowSharedCacheWithCookies); reason != "" {
 		return ent, false, reason, nil
 	}
 	return ent, true, "ok", nil

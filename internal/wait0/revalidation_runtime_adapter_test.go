@@ -77,6 +77,16 @@ func TestRevalidationRuntimeAdapter_SnapshotsAndHelpers(t *testing.T) {
 	}
 }
 
+func TestRevalidationRuntimeAdapter_AllowSharedCacheWithCookies(t *testing.T) {
+	rule := mustRule(t, "PathPrefix(/public)")
+	rule.AllowSharedCacheWithCookies = true
+	s := newTestService(t, "http://example.com", []Rule{rule})
+	a := newRevalidationRuntimeAdapter(s)
+	if !a.AllowSharedCacheWithCookies("/public/page") || a.AllowSharedCacheWithCookies("/other") {
+		t.Fatal("cookie cache opt in was not resolved from the matching rule")
+	}
+}
+
 func TestRevalidationRuntimeAdapter_Do(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

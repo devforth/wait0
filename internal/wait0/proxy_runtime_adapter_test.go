@@ -18,6 +18,7 @@ import (
 func TestProxyRuntimeAdapter_HandleControlAndRule(t *testing.T) {
 	s := newTestService(t, "http://example.com", []Rule{mustRule(t, "PathPrefix(/api)")})
 	s.cfg.Rules[0].BypassWhenRequestHeaders = []string{"Authorization"}
+	s.cfg.Rules[0].AllowSharedCacheWithCookies = true
 	a := newProxyRuntimeAdapter(s)
 
 	w := httptest.NewRecorder()
@@ -57,6 +58,9 @@ func TestProxyRuntimeAdapter_HandleControlAndRule(t *testing.T) {
 	rule := a.PickRule("/api/x")
 	if rule == nil {
 		t.Fatalf("expected matching rule")
+	}
+	if !rule.AllowSharedCacheWithCookies {
+		t.Fatal("cookie cache opt in was not passed to the proxy rule")
 	}
 	rule.BypassWhenCookies = append(rule.BypassWhenCookies, "session")
 	rule.BypassWhenRequestHeaders = append(rule.BypassWhenRequestHeaders, "X-Preview")

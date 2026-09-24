@@ -31,12 +31,13 @@ type Entry struct {
 }
 
 type Rule struct {
-	Bypass                   bool
-	BypassWhenCookies        []string
-	BypassWhenRequestHeaders []string
-	CachableContentTypes     []string
-	VaryByQueryParams        []string
-	Expiration               time.Duration
+	Bypass                      bool
+	BypassWhenCookies           []string
+	AllowSharedCacheWithCookies bool
+	BypassWhenRequestHeaders    []string
+	CachableContentTypes        []string
+	VaryByQueryParams           []string
+	Expiration                  time.Duration
 }
 
 func IsStale(ent Entry, exp time.Duration) bool {

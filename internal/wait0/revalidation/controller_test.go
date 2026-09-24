@@ -24,12 +24,13 @@ type fakeRuntime struct {
 	allKeys []string
 	origin  string
 
-	sendMarkers  bool
-	debugHeaders proxy.DebugHeaderSet
-	random       string
-	contentTypes []string
-	doFunc       func(req *http.Request) (*http.Response, error)
-	resolveFunc  func(string, http.Header, string) (string, bool, error)
+	sendMarkers                 bool
+	debugHeaders                proxy.DebugHeaderSet
+	random                      string
+	contentTypes                []string
+	allowSharedCacheWithCookies bool
+	doFunc                      func(req *http.Request) (*http.Response, error)
+	resolveFunc                 func(string, http.Header, string) (string, bool, error)
 
 	putCalls    map[string]Entry
 	deleteCalls []string
@@ -104,6 +105,10 @@ func (f *fakeRuntime) CachableContentTypes(string) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.contentTypes...)
+}
+
+func (f *fakeRuntime) AllowSharedCacheWithCookies(string) bool {
+	return f.allowSharedCacheWithCookies
 }
 
 func (f *fakeRuntime) ResolveVariantTarget(baseKey string, headers http.Header, host string) (string, bool, error) {
@@ -190,24 +195,25 @@ func TestController_Async_ExecutesOnce(t *testing.T) {
 
 func TestController_Once_Branches(t *testing.T) {
 	tests := []struct {
-		name        string
-		hasCur      bool
-		cur         Entry
-		respStatus  int
-		cacheCtl    string
-		contentType string
-		responseHdr http.Header
-		targetHdr   http.Header
-		body        string
-		sendMarkers bool
-		doErr       error
-		readErr     bool
-		by          string
-		wantKind    string
-		wantChanged bool
-		wantDeleted bool
-		wantPut     bool
-		wantReqHdr  bool
+		name                        string
+		hasCur                      bool
+		cur                         Entry
+		respStatus                  int
+		cacheCtl                    string
+		contentType                 string
+		responseHdr                 http.Header
+		targetHdr                   http.Header
+		body                        string
+		sendMarkers                 bool
+		doErr                       error
+		readErr                     bool
+		by                          string
+		wantKind                    string
+		wantChanged                 bool
+		wantDeleted                 bool
+		wantPut                     bool
+		wantReqHdr                  bool
+		allowSharedCacheWithCookies bool
 	}{
 		{
 			name:        "updated",
@@ -304,6 +310,23 @@ func TestController_Once_Branches(t *testing.T) {
 			wantDeleted: true,
 		},
 		{
+			name:       "cookie target without opt in",
+			respStatus: http.StatusOK,
+			targetHdr:  http.Header{"Cookie": {"_ga=analytics"}},
+			body:       "public",
+			wantKind:   "ignored-cache-control",
+		},
+		{
+			name:                        "cookie target with opt in",
+			respStatus:                  http.StatusOK,
+			targetHdr:                   http.Header{"Cookie": {"_ga=analytics"}},
+			body:                        "public",
+			allowSharedCacheWithCookies: true,
+			wantKind:                    "updated",
+			wantChanged:                 true,
+			wantPut:                     true,
+		},
+		{
 			name:        "origin error",
 			doErr:       errors.New("origin down"),
 			wantKind:    "error",
@@ -321,6 +344,7 @@ func TestController_Once_Branches(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rt := newFakeRuntime()
 			rt.sendMarkers = tc.sendMarkers
+			rt.allowSharedCacheWithCookies = tc.allowSharedCacheWithCookies
 			if tc.hasCur {
 				rt.peekMap["/page"] = tc.cur
 			}

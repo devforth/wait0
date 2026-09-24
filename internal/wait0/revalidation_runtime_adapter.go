@@ -93,6 +93,11 @@ func (a *revalidationRuntimeAdapter) CachableContentTypes(path string) []string 
 	return append([]string(nil), rule.CachableContentTypes...)
 }
 
+func (a *revalidationRuntimeAdapter) AllowSharedCacheWithCookies(path string) bool {
+	rule := a.s.pickRule(path)
+	return rule != nil && rule.AllowSharedCacheWithCookies
+}
+
 func (a *revalidationRuntimeAdapter) ResolveVariantTarget(baseKey string, headers http.Header, host string) (string, bool, error) {
 	manifest, ok := a.s.peekCacheEntry(baseKey)
 	if !ok || manifest.VariantKind != variantKindManifest {

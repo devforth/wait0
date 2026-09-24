@@ -130,16 +130,17 @@ type WarmUpConfig struct {
 }
 
 type Rule struct {
-	Match                      string              `yaml:"match"`
-	Priority                   int                 `yaml:"priority"`
-	Bypass                     bool                `yaml:"bypass"`
-	BypassWhenCookies          []string            `yaml:"bypassWhenCookies"`
-	BypassWhenRequestHeaders   []string            `yaml:"bypassWhenRequestHeaders"`
-	CachableContentTypes       []string            `yaml:"cachableContentType"`
-	VaryByQueryParams          []string            `yaml:"varyByQueryParams"`
-	Expiration                 string              `yaml:"expiration"`
-	WarmUp                     *WarmUpConfig       `yaml:"warmUp"`
-	WarmupRequestHeaderPresets map[string][]string `yaml:"warmupRequestHeaderPresets"`
+	Match                       string              `yaml:"match"`
+	Priority                    int                 `yaml:"priority"`
+	Bypass                      bool                `yaml:"bypass"`
+	BypassWhenCookies           []string            `yaml:"bypassWhenCookies"`
+	AllowSharedCacheWithCookies bool                `yaml:"allowSharedCacheWithCookies"`
+	BypassWhenRequestHeaders    []string            `yaml:"bypassWhenRequestHeaders"`
+	CachableContentTypes        []string            `yaml:"cachableContentType"`
+	VaryByQueryParams           []string            `yaml:"varyByQueryParams"`
+	Expiration                  string              `yaml:"expiration"`
+	WarmUp                      *WarmUpConfig       `yaml:"warmUp"`
+	WarmupRequestHeaderPresets  map[string][]string `yaml:"warmupRequestHeaderPresets"`
 
 	// compiled
 	matchers              []pathPrefixMatcher

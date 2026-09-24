@@ -46,6 +46,59 @@ func TestHandle_CacheMissThenHit(t *testing.T) {
 	}
 }
 
+func TestHandle_AllowSharedCacheWithCookies(t *testing.T) {
+	var hits atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "public page")
+	}))
+	defer origin.Close()
+
+	rule := mustRule(t, "PathPrefix(/)")
+	rule.AllowSharedCacheWithCookies = true
+	s := newTestService(t, origin.URL, []Rule{rule})
+
+	for _, tc := range []struct {
+		path   string
+		cookie bool
+		want   string
+	}{
+		{path: "/cookie-first", cookie: true, want: "miss"},
+		{path: "/cookie-first", want: "hit"},
+		{path: "/anonymous-first", want: "miss"},
+		{path: "/anonymous-first", cookie: true, want: "hit"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "http://wait0.local"+tc.path, nil)
+		if tc.cookie {
+			req.AddCookie(&http.Cookie{Name: "_ga", Value: "analytics"})
+		}
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+		if got := w.Result().Header.Get("X-Wait0"); got != tc.want {
+			t.Fatalf("%s cookie=%t: X-Wait0 = %q, want %q", tc.path, tc.cookie, got, tc.want)
+		}
+		if body := w.Body.String(); body != "public page" {
+			t.Fatalf("body = %q, want public page", body)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://wait0.local/anonymous-first", nil)
+	req.AddCookie(&http.Cookie{Name: "_ga", Value: "analytics"})
+	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if got := w.Result().Header.Get("X-Wait0"); got != "bypass" {
+		t.Fatalf("authorized X-Wait0 = %q, want bypass", got)
+	}
+	if got := w.Result().Header.Get("X-Wait0-Reason"); got != proxy.CacheabilityCredentials {
+		t.Fatalf("authorized X-Wait0-Reason = %q, want %q", got, proxy.CacheabilityCredentials)
+	}
+	if got := hits.Load(); got != 3 {
+		t.Fatalf("origin hits = %d, want 3", got)
+	}
+}
+
 func TestHandle_PrivateCookieResponseIsNeverShared(t *testing.T) {
 	var hits atomic.Int32
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -350,6 +403,7 @@ func TestHandle_BypassWhenCookiePresent(t *testing.T) {
 
 	rule := mustRule(t, "PathPrefix(/)")
 	rule.BypassWhenCookies = []string{"sessionid"}
+	rule.AllowSharedCacheWithCookies = true
 	s := newTestService(t, origin.URL, []Rule{rule})
 
 	req := httptest.NewRequest(http.MethodGet, "http://wait0.local/page", nil)

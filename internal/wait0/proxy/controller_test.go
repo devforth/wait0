@@ -55,7 +55,7 @@ func (f *fakeRuntime) ResolveVariant(_ Entry, _ *http.Request) (string, []string
 
 func (f *fakeRuntime) DeleteKey(key string) { f.deleted = append(f.deleted, key) }
 
-func (f *fakeRuntime) FetchFromOrigin(*http.Request) (Entry, bool, string, error) {
+func (f *fakeRuntime) FetchFromOrigin(*http.Request, bool) (Entry, bool, string, error) {
 	return f.originEnt, f.originCacheable, f.originStatus, f.originErr
 }
 
