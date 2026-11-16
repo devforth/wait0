@@ -6,7 +6,7 @@
 wait0 is an ultra-fast cache-first HTTP reverse proxy written in Go that serves from cache instantly and revalidates responses in the background. It targets SSR and other dynamic origin workloads where latency and origin offload are critical.
 
 ## Tech Stack
-- **Language:** Go 1.27.1
+- **Language:** Go 1.27.4
 - **Framework:** Standard library `net/http`
 - **Database:** LevelDB (embedded disk cache)
 - **ORM:** N/A

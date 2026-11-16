@@ -6,7 +6,7 @@ Developer guide for building, running, testing, and operating `wait0`.
 
 ## Requirements
 
-- Go `1.27.1+`
+- Go `1.27.4+`
 - GNU Make
 - `govulncheck` `v1.7.0+` for `make vulncheck` / `make ci-check`
 - Optional: Docker (for containerized local runs)
