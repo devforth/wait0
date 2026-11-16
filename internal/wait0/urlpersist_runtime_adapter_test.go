@@ -783,8 +783,16 @@ func TestURLPersistHooks_NoopWhenPersisterDisabled(t *testing.T) {
 
 // dropURLPersistCacheEntry removes a key from both cache tiers directly, which
 // is the one path that does not notify the persister.
+//
+// Disk writes are queued, and HasKey only turns true once the writer has applied
+// the store, so the key is awaited first. Otherwise HasKey is still false while
+// the store is pending, the final wait passes before the delete has run, and a
+// following request can find the not-yet-deleted entry on disk and promote it
+// back into RAM. Every earlier store is queued ahead of the delete, so once the
+// key disappears it is really gone.
 func dropURLPersistCacheEntry(t *testing.T, s *Service, key string) {
 	t.Helper()
+	waitForURLPersist(t, func() bool { return s.disk.HasKey(key) })
 	s.ram.Delete(key)
 	s.disk.Delete(key)
 	waitForURLPersist(t, func() bool { return !s.disk.HasKey(key) })
